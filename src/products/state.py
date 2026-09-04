@@ -18,6 +18,52 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _canonical_categories(values: tuple[str, ...]) -> tuple[str, ...]:
+    """Compare category membership, not source presentation order."""
+    return tuple(sorted(values, key=lambda value: (value.casefold(), value)))
+
+
+def _canonical_options(
+    values: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...]:
+    """Variant option order is not semantic when option names are explicit."""
+    return tuple(
+        sorted(values, key=lambda item: (item[0].casefold(), item[1].casefold(), item))
+    )
+
+
+def _canonical_variant_state(
+    variant: CurrentProductVariantState,
+) -> tuple[object, ...]:
+    return (
+        variant.key,
+        variant.sku,
+        _canonical_options(variant.options),
+        variant.price,
+        variant.availability,
+    )
+
+
+def _canonical_current_variants(
+    variants: tuple[CurrentProductVariantState, ...],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(sorted((_canonical_variant_state(item) for item in variants), key=lambda item: str(item[0])))
+
+
+def _canonical_incoming_variants(product: ValidatedProduct) -> tuple[tuple[object, ...], ...]:
+    values = tuple(
+        (
+            variant.key,
+            variant.sku,
+            _canonical_options(variant.options),
+            variant.price,
+            variant.availability,
+        )
+        for variant in product.variants
+    )
+    return tuple(sorted(values, key=lambda item: str(item[0])))
+
+
 def _as_current_state(
     product: ValidatedProduct,
     *,
@@ -54,16 +100,6 @@ def _same_business_state(
     current: CurrentProductState,
     incoming: ValidatedProduct,
 ) -> bool:
-    incoming_variants = tuple(
-        CurrentProductVariantState(
-            key=variant.key,
-            sku=variant.sku,
-            options=variant.options,
-            price=variant.price,
-            availability=variant.availability,
-        )
-        for variant in incoming.variants
-    )
     return (
         current.identity == incoming.identity
         and current.title == incoming.title
@@ -74,8 +110,10 @@ def _same_business_state(
         and current.quantity == incoming.quantity
         and current.category == incoming.category
         and current.sku == incoming.sku
-        and current.categories == incoming.categories
-        and current.variants == incoming_variants
+        and _canonical_categories(current.categories)
+        == _canonical_categories(incoming.categories)
+        and _canonical_current_variants(current.variants)
+        == _canonical_incoming_variants(incoming)
         and current.source_url == incoming.source_url
     )
 

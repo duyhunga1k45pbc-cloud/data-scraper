@@ -1,25 +1,18 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M3
+## 1. Current scope: M4
 
-M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified two assumptions: one evidence payload can produce many observations, and product identity does not always require a product URL.
+M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators.
 
-M3 stress-tests **product meaning**, not acquisition scale.
+M4 stress-tests **trusted state and history over time**.
 
-Current sources:
-
-```text
-Books to Scrape  → static HTML
-ScrapeMe         → WooCommerce HTML
-Scrapify JS      → deterministic JSON endpoint behind JS storefront
-ScrapingSandbox  → product HTML with a deterministic JSON product snapshot
-```
+It does not add a new source or a new persistence mechanism. Instead, controlled snapshots of the same product test whether the system distinguishes real business changes from source representation noise.
 
 ## 2. Business goal
 
 > Collect external product data and maintain a reliable structured current state and history without losing source-observed business meaning.
 
-**BR-01 Acquire** — Obtain the required source evidence using the least-complex correct mechanism.
+**BR-01 Acquire** — Obtain required source evidence using the least-complex correct mechanism.
 
 **BR-02 Structure** — Preserve required product fields under explicit representations.
 
@@ -31,7 +24,9 @@ ScrapingSandbox  → product HTML with a deterministic JSON product snapshot
 
 **BR-06 Deliver** — Expose current state and history as structured CLI output.
 
-**BR-07 Rich product semantics (M3)** — Preserve source-observed original/compare pricing, SKU, category cardinality, and variant-level price/availability when the source provides them.
+**BR-07 Rich product semantics** — Preserve compare pricing, SKU, category cardinality, and variant-level price/availability when observed.
+
+**BR-08 Semantic change history (M4)** — History must represent meaningful product-state changes, not ordering differences in source collections whose order has no business meaning.
 
 ## 3. Architecture
 
@@ -103,49 +98,11 @@ body_hash
 
 ### ProductObservation
 
-Source-shaped interpretation now includes optional richer fields:
-
-```text
-title_raw
-price_raw
-compare_at_price_raw
-currency_raw
-availability_raw
-category_raw
-categories_raw[]
-sku_raw
-source_record_id_raw
-canonical_product_url_raw
-variants_raw[]
-```
-
-Each raw variant preserves:
-
-```text
-sku_raw
-price_raw
-availability_raw
-options_raw[]
-```
+Source-shaped interpretation. Raw collection order is preserved here because it is evidence of what the parser observed.
 
 ### ProductNormalizedData
 
-Typed representation:
-
-```text
-identity inputs
-price
-compare_at_price
-currency
-availability
-quantity
-category | null
-categories[]
-sku | null
-variants[]
-```
-
-Variant normalization yields a stable variant key, normalized options, Decimal price, and normalized availability.
+Typed product representation including identity inputs, product pricing, category data, SKU, and variants.
 
 ### ValidatedProduct
 
@@ -153,58 +110,64 @@ Only validated product data may enter state-changing logic.
 
 ### CurrentProductState
 
-Current trusted business representation. Variant snapshots are part of the product state.
+Current trusted product representation.
 
 ### ProductHistory
 
-Only accepted `CREATE`/`UPDATE` transitions. A change in one validated variant is a product state change.
+Only accepted `CREATE`/`UPDATE` transitions. Each entry contains `previous_state` and `new_state` snapshots.
 
-## 5. M3 observed semantics
+## 5. M4 change semantics
 
-ScrapingSandbox exposes a product with:
+M4 controls multiple snapshots of the same ScrapingSandbox product.
+
+The following are meaningful accepted changes:
 
 ```text
-price = 155.62
-compareAtPrice = 206.69
-sku = SKU-HEA-0001
-inStock = true
-category = Health
-variants = 4 independently priced/stocked configurations
+product price changes
+compare_at_price appears/disappears/changes
+product availability changes
+category membership changes
+SKU changes
+variant price changes
+variant availability changes
+variant added
+variant removed
 ```
 
-This falsifies a narrower interpretation in which one product has only one meaningful price/availability representation.
+The following are **not** product-state changes by themselves:
 
-M3 therefore preserves product-level price **and** variant-level price instead of deriving one from the other.
+```text
+same category membership in a different source order
+same variants in a different source order
+same named variant options in a different order
+new fetched_at/observed attempt with equivalent business state
+```
 
-M3 also fixes a known M1 information-loss case: ScrapeMe exposes multiple categories. The shared contract now preserves `categories[]`; legacy `category` remains only for sources that truly expose one category.
+Therefore state comparison is semantic rather than raw tuple-order equality.
 
-## 6. Identity
+Raw observation order remains preserved for divergence tracing; only trusted-state equivalence ignores non-semantic collection order.
 
-Product identity remains:
+## 6. Identity and locator
+
+Primary product identity remains:
 
 ```text
 source_record_id present → identity_key = "id:<source_record_id>"
 otherwise                → identity_key = "url:<canonical_product_url>"
 ```
 
-Variant identity is local to the product snapshot:
+A canonical product URL may also be an alternate locator even when the primary identity uses a source record ID.
+
+Variant identity remains local to one product state:
 
 ```text
 SKU present → variant key = "sku:<sku>"
 otherwise   → normalized option combination
 ```
 
-M3 does not introduce cross-source or fuzzy identity resolution.
-
-A product can still expose more than one locator. If a stable source record ID is
-present, it remains the **primary identity**, but the current canonical product URL
-is retained as an alternate lookup locator. Therefore URL-based delivery commands
-must query the stored canonical URL rather than assume every URL-backed record uses
-`url:<canonical_product_url>` as its primary `identity_key`.
-
 ## 7. Validation
 
-Existing product rules remain:
+Existing rules remain:
 
 ```text
 title required
@@ -213,21 +176,14 @@ currency recognized
 availability recognized
 quantity, when present, >= 0
 OUT_OF_STOCK + positive quantity invalid
-supported source + valid product identity
-```
-
-M3 adds:
-
-```text
-compare_at_price, when present, >= 0
-compare_at_price, when present, must not be below current price
-variant identity required
-variant identity unique inside one product
+supported source + valid identity
+compare_at_price, when present, >= price
+variant identity required and unique
 variant price required and >= 0
 variant availability recognized
 ```
 
-No invariant states that product-level price must equal min/max variant price; the source does not support that claim.
+M4 does not add validation rules. It changes how two **valid** states are compared.
 
 ## 8. State transition rules
 
@@ -242,16 +198,17 @@ no current state + valid product
 ### NO_CHANGE
 
 ```text
-same validated product semantics, including variants
-→ state unchanged
+semantically equivalent validated product
+→ current trusted state unchanged
 → no history
 ```
+
+Equivalence ignores ordering of set-like category/variant collections while still comparing every meaningful field inside them.
 
 ### UPDATE
 
 ```text
-any accepted business-state difference
-(including compare price, categories, SKU, or variant snapshot)
+accepted semantic difference
 → update current state
 → append exactly one history entry
 ```
@@ -284,7 +241,9 @@ invalid normalized data
 
 **INV-09** Variant keys are unique within an accepted product state.
 
-**INV-10** Accepted richer product fields must remain traceable from persisted state/history back through observation to raw evidence.
+**INV-10** Accepted richer product fields remain traceable from state/history back through observation to raw evidence.
+
+**INV-11 (M4)** Presentation-order changes in order-insensitive product collections must not create a trusted state transition.
 
 ## 10. Persistence
 
@@ -298,7 +257,7 @@ product_observations
 product_history
 ```
 
-Migrations:
+Migrations remain:
 
 ```text
 0001 M0 persistence
@@ -307,42 +266,38 @@ Migrations:
 0004 M3 richer product semantics
 ```
 
-`0004` adds to observations/current product state:
+M4 adds **no migration**. Existing full-state history snapshots already support the required time semantics.
+
+A `NO_CHANGE` observation is persisted as an observation but does not append product history.
+
+## 11. M4 observed failure and correction
+
+Stress testing reversed the same valid variant collection while keeping every variant key/value unchanged.
+
+Before M4:
 
 ```text
-compare_at_price
-sku
-categories[]
-variants[]
+same variants, different tuple order
+→ UPDATE   # false business change
 ```
 
-and corresponding raw observation fields.
+This violated `INV-06` and the intended meaning of history.
 
-Variants are nested JSON snapshots, not a separate table. M3 only requires product-level current state/history. A separate variant relation is deferred until independent variant querying/history is a demonstrated requirement.
+M4 corrects state equivalence by comparing category membership, variant membership, and named variant options in canonical order **for comparison only**.
 
-## 11. Acquisition decision in M3
+The source-shaped/raw representation is not rewritten, preserving traceability.
 
-ScrapingSandbox's required JSON snapshot is rendered into the product HTML itself. Therefore:
-
-```text
-httpx fetch
-→ RawEvidence HTML
-→ parse deterministic JSON <pre>
-```
-
-is sufficient.
-
-Playwright remains unjustified for M3.
-
-## 12. Acceptance criteria added by M3
+## 12. Acceptance criteria added by M4
 
 ```text
-AC-10 compare-at price survives observation → state → history
-AC-11 multiple source categories are preserved without inventing a primary category
-AC-12 variants retain stable identity/options/price/availability
-AC-13 a variant state change produces one product UPDATE + one history entry
-AC-14 invalid/duplicate variant semantics are rejected before trusted-state mutation
-AC-15 live ScrapingSandbox product reaches PostgreSQL with richer semantics intact
+AC-16 product price change → one UPDATE with correct previous/new snapshots
+AC-17 compare-at price removal → one UPDATE
+AC-18 variant stock change → one product UPDATE
+AC-19 variant add/remove → one product UPDATE per accepted snapshot
+AC-20 variant presentation reorder only → NO_CHANGE + no history
+AC-21 category presentation reorder only → NO_CHANGE + no history
+AC-22 CREATE → UPDATE → equivalent replay persists observations but only meaningful history
+AC-23 PostgreSQL preserves the same semantic-history contract
 ```
 
 ## 13. Freeze rule

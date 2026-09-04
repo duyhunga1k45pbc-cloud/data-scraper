@@ -8,42 +8,27 @@ Current milestones:
 
 - **M0 — Books to Scrape:** one static HTML source, end-to-end correctness loop.
 - **M1 — ScrapeMe:** second HTML e-commerce source, shared `Product` state contract.
-- **M2 — Scrapify JS:** one JSON payload can contain many product records and stable source IDs can be the best identity.
-- **M3 — ScrapingSandbox:** richer e-commerce semantics: compare-at pricing, SKU, variants, variant stock, and preserved category cardinality.
+- **M2 — Scrapify JS:** one evidence payload can contain many product records and stable source IDs can be the best identity.
+- **M3 — ScrapingSandbox:** richer product semantics: compare-at pricing, SKU, categories, variants, and variant stock/price.
+- **M3.1 — identity vs locator:** URL lookup is separated from primary product identity.
+- **M4 — semantic change history:** trusted history records meaningful product changes while ignoring source presentation-order noise.
 
-## M3 finding
+## M4 finding
 
-M2's product contract was still too narrow for richer e-commerce data.
+The M3 state comparator treated variant tuple order as business meaning. Reversing the same variant records therefore produced a false `UPDATE` even though the product had not changed.
 
-ScrapingSandbox product pages expose product-level pricing plus a JSON snapshot containing:
-
-```text
-price
-compareAtPrice
-sku
-inStock
-category
-variants[]
-  ├── color
-  ├── size
-  ├── sku
-  ├── inStock
-  └── price
-```
-
-The shared product contract therefore now preserves:
+M4 changes the state comparison contract:
 
 ```text
-current product price
-compare-at/original price
-product SKU
-all observed categories
-variant identities/options
-variant price
-variant availability
+meaningful product change
+→ UPDATE + history
+
+same categories/variants in a different source order
+→ NO_CHANGE
+→ no history
 ```
 
-A variant change is part of the trusted product state and can therefore produce an `UPDATE` + history entry.
+Raw observations still preserve source order for traceability. Only the **trusted-state comparison** treats category membership, variant membership, and named variant-option order as order-insensitive semantics.
 
 ## Core flow
 
@@ -73,6 +58,10 @@ Core rule:
 
 > Only validated and accepted product data may change trusted persisted state.
 
+M4 strengthens that rule:
+
+> History records business-state changes, not source presentation-order changes.
+
 ## Current sources
 
 ```text
@@ -82,7 +71,23 @@ Scrapify JS       → public JSON endpoint observed behind JS storefront
 ScrapingSandbox   → product HTML containing deterministic JSON preview
 ```
 
-M3 still does **not** add Playwright. The required richer product evidence is present in the fetched HTML, so `httpx + BeautifulSoup + JSON parsing` remains sufficient.
+No browser automation is required by the current evidence paths.
+
+## Change semantics covered by M4
+
+The deterministic M4 replay tests exercise the same ScrapingSandbox product across controlled snapshots:
+
+```text
+product price changed         → UPDATE
+compare-at price removed      → UPDATE
+variant stock changed         → UPDATE
+variant added/removed         → UPDATE
+variant order only changed    → NO_CHANGE
+category order only changed   → NO_CHANGE
+same changed snapshot replayed→ NO_CHANGE
+```
+
+A history entry stores both `previous_state` and `new_state`, so each accepted transition remains explainable.
 
 ## Identity
 
@@ -98,19 +103,9 @@ or:
 source + source_record_id
 ```
 
-Variants currently live inside the parent product state and use a stable variant key, preferring SKU when available.
+A stable source record ID remains the primary identity when available. A canonical URL may still be used as an alternate lookup locator.
 
-## M3 validation additions
-
-```text
-compare_at_price >= current price, when present
-variant identity must exist
-variant identities must be unique within one product
-variant price must be valid and >= 0
-variant availability must be recognized
-```
-
-No assumption is made that product-level price equals min/max variant price.
+Variants remain nested inside the parent product state and use a stable local key, preferring SKU when available.
 
 ## Persistence
 
@@ -124,14 +119,7 @@ products
 product_history
 ```
 
-Migration `0004_m3_richer_product_semantics` adds product/observation fields for:
-
-- compare-at price
-- SKU
-- full category list
-- variant snapshots
-
-Variants remain nested JSON in product state/history. They are not a separate table because M3 has no requirement for independent variant querying/history yet.
+M4 requires **no schema migration**. The existing full-state snapshots are sufficient; only semantic state comparison changed.
 
 ## Local PostgreSQL
 
@@ -149,20 +137,22 @@ Deterministic suite:
 pytest -q
 ```
 
-M3 live source:
+M4 deterministic semantic-history tests:
 
 ```bash
-RUN_LIVE=1 pytest -q tests/integration/test_scraping_sandbox_live.py
+pytest -q \
+  tests/acceptance/test_m4_semantic_change_history.py \
+  tests/acceptance/test_m4_semantic_change_persistence.py
 ```
 
-M3 live + PostgreSQL:
+M4 PostgreSQL change-over-time test:
 
 ```bash
-RUN_LIVE=1 RUN_POSTGRES=1 \
-pytest -q tests/integration/test_scraping_sandbox_postgres_e2e.py
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m4_postgres_change_history.py
 ```
 
-Full integration:
+Full integration suite, including live sources:
 
 ```bash
 RUN_LIVE=1 RUN_POSTGRES=1 pytest -q tests/integration
@@ -170,7 +160,7 @@ RUN_LIVE=1 RUN_POSTGRES=1 pytest -q tests/integration
 
 ## CLI
 
-Scrape the M3 product:
+Scrape a product:
 
 ```bash
 python -m src.main scrape \
@@ -187,7 +177,7 @@ python -m src.main history \
   https://scrapingsandbox.com/product/1
 ```
 
-Existing M2 catalog commands remain available:
+M2 catalog commands remain available:
 
 ```bash
 python -m src.main scrape-catalog scrapify-js
