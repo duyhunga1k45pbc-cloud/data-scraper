@@ -136,6 +136,7 @@ def find_product_row(
     canonical_product_url: str | None = None,
     source_record_id: str | None = None,
     identity_key: str | None = None,
+    for_update: bool = False,
 ) -> ProductRow | None:
     """Find one current product by its primary identity or a current locator.
 
@@ -143,33 +144,37 @@ def find_product_row(
     A URL-only lookup intentionally queries ``canonical_product_url`` directly: a
     product may use ``id:<source_record_id>`` as its primary identity while still
     remaining addressable by its current canonical URL.
+
+    M6 uses ``for_update=True`` inside state-transition transactions. On
+    PostgreSQL this serializes concurrent transitions for an existing product, so
+    every worker computes its decision from the latest committed trusted state.
+    Read-only CLI lookups keep the default non-locking behavior.
     """
 
+    statement = None
     if identity_key is not None:
-        return session.scalar(
-            select(ProductRow).where(
-                ProductRow.source == source,
-                ProductRow.identity_key == identity_key,
-            )
+        statement = select(ProductRow).where(
+            ProductRow.source == source,
+            ProductRow.identity_key == identity_key,
+        )
+    elif source_record_id is not None:
+        statement = select(ProductRow).where(
+            ProductRow.source == source,
+            ProductRow.identity_key == f"id:{source_record_id}",
+        )
+    elif canonical_product_url is not None:
+        statement = select(ProductRow).where(
+            ProductRow.source == source,
+            ProductRow.canonical_product_url == canonical_product_url,
         )
 
-    if source_record_id is not None:
-        return session.scalar(
-            select(ProductRow).where(
-                ProductRow.source == source,
-                ProductRow.identity_key == f"id:{source_record_id}",
-            )
-        )
+    if statement is None:
+        return None
 
-    if canonical_product_url is not None:
-        return session.scalar(
-            select(ProductRow).where(
-                ProductRow.source == source,
-                ProductRow.canonical_product_url == canonical_product_url,
-            )
-        )
+    if for_update:
+        statement = statement.with_for_update()
 
-    return None
+    return session.scalar(statement)
 
 
 def list_product_history_rows(
@@ -391,7 +396,11 @@ def apply_state_transition(
     if existing_product is None:
         existing_product = existing_book
 
-    if transition.decision in {StateDecision.REJECT, StateDecision.NO_CHANGE}:
+    if transition.decision in {
+        StateDecision.REJECT,
+        StateDecision.STALE,
+        StateDecision.NO_CHANGE,
+    }:
         return existing_product
 
     if transition.current_state is None or transition.history_entry is None:

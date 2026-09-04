@@ -18,6 +18,12 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _canonical_categories(values: tuple[str, ...]) -> tuple[str, ...]:
     """Compare category membership, not source presentation order."""
     return tuple(sorted(values, key=lambda value: (value.casefold(), value)))
@@ -143,6 +149,15 @@ def transition_validated_product(
 
     if current.identity != incoming.identity:
         raise ValueError("incoming product identity does not match current state identity")
+
+    # Temporal correctness: an observation older than the trusted state may be
+    # preserved for audit, but it must not move current state backward in time.
+    if _as_utc(incoming.observed_at) < _as_utc(current.observed_at):
+        return StateTransitionResult(
+            decision=StateDecision.STALE,
+            current_state=current,
+            history_entry=None,
+        )
 
     if _same_business_state(current, incoming):
         return StateTransitionResult(

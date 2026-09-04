@@ -60,6 +60,7 @@ def _persist_observations_transaction(
                     source=normalized.source,
                     canonical_product_url=normalized.canonical_product_url,
                     source_record_id=normalized.source_record_id,
+                    for_update=True,
                 )
                 current = (
                     row_to_current_state(existing_product)

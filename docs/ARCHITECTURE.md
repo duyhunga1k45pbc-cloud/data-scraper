@@ -1,12 +1,12 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M4
+## 1. Current scope: M5
 
-M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators.
+M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators. M4 made history semantic rather than presentation-order sensitive.
 
-M4 stress-tests **trusted state and history over time**.
+M5 stress-tests **temporal correctness**: processing order must not be allowed to rewrite trusted state backward when an older valid observation arrives after a newer one.
 
-It does not add a new source or a new persistence mechanism. Instead, controlled snapshots of the same product test whether the system distinguishes real business changes from source representation noise.
+M5 adds no source and no persistence mechanism. It adds one explicit state decision, `STALE`, and proves that stale observations remain traceable without changing trusted state/history.
 
 ## 2. Business goal
 
@@ -28,6 +28,8 @@ It does not add a new source or a new persistence mechanism. Instead, controlled
 
 **BR-08 Semantic change history (M4)** — History must represent meaningful product-state changes, not ordering differences in source collections whose order has no business meaning.
 
+**BR-09 Temporal correctness (M5)** — A valid observation older than the current trusted state must not overwrite that state or append trusted history.
+
 ## 3. Architecture
 
 ```text
@@ -48,11 +50,11 @@ Validation
 ValidatedProduct
       ↓
 State Transition
- ┌───────┼─────────────┐
- │       │             │
-CREATE NO_CHANGE     UPDATE
- │                     │
- └──────────┬──────────┘
+ ┌───────┼──────────┬───────────┐
+ │       │          │           │
+CREATE NO_CHANGE   STALE      UPDATE
+ │                              │
+ └──────────────┬───────────────┘
             ↓
  CurrentProductState
             ↓
@@ -147,7 +149,25 @@ Therefore state comparison is semantic rather than raw tuple-order equality.
 
 Raw observation order remains preserved for divergence tracing; only trusted-state equivalence ignores non-semantic collection order.
 
-## 6. Identity and locator
+## 6. M5 temporal semantics
+
+`observed_at` represents when the source evidence was observed. It is distinct from `changed_at`/transaction processing time.
+
+For an existing trusted state:
+
+```text
+incoming.observed_at < current.observed_at
+→ STALE
+→ current trusted state unchanged
+→ no history entry
+→ observation remains persisted with state_decision = STALE
+```
+
+The temporal check occurs after identity and validation have established that the incoming object is a valid product for the same entity, but before semantic equality/update comparison. Therefore an older equivalent observation is still classified as `STALE`, not `NO_CHANGE`.
+
+M5 deliberately covers **late-arrival ordering**, not simultaneous transaction races. Two workers that read the same old state concurrently require a later concurrency-control mechanism (for example row locking or compare-and-set) if reality demonstrates that failure mode.
+
+## 7. Identity and locator
 
 Primary product identity remains:
 
@@ -165,7 +185,7 @@ SKU present → variant key = "sku:<sku>"
 otherwise   → normalized option combination
 ```
 
-## 7. Validation
+## 8. Validation
 
 Existing rules remain:
 
@@ -185,7 +205,7 @@ variant availability recognized
 
 M4 does not add validation rules. It changes how two **valid** states are compared.
 
-## 8. State transition rules
+## 9. State transition rules
 
 ### CREATE
 
@@ -205,6 +225,16 @@ semantically equivalent validated product
 
 Equivalence ignores ordering of set-like category/variant collections while still comparing every meaningful field inside them.
 
+### STALE (M5)
+
+```text
+valid same-identity observation
++ incoming.observed_at < current.observed_at
+→ persist observation as STALE
+→ current trusted state unchanged
+→ history unchanged
+```
+
 ### UPDATE
 
 ```text
@@ -221,7 +251,7 @@ invalid normalized data
 → history unchanged
 ```
 
-## 9. Invariants
+## 10. Invariants
 
 **INV-01** Only validated + accepted data may modify trusted state.
 
@@ -245,7 +275,11 @@ invalid normalized data
 
 **INV-11 (M4)** Presentation-order changes in order-insensitive product collections must not create a trusted state transition.
 
-## 10. Persistence
+**INV-12 (M5)** An observation with `observed_at` older than the current trusted state must not modify current state or append history.
+
+**INV-13 (M6)** Concurrent transitions for an existing current-state row must be decided from the latest committed trusted state; an older concurrent observation must not overwrite a newer committed state.
+
+## 11. Persistence
 
 ```text
 raw_evidence
@@ -266,11 +300,19 @@ Migrations remain:
 0004 M3 richer product semantics
 ```
 
-M4 adds **no migration**. Existing full-state history snapshots already support the required time semantics.
+M4, M5, and M6 add **no migration**. Existing state/history snapshots and the string `state_decision` column already support semantic comparison and the explicit `STALE` decision.
 
-A `NO_CHANGE` observation is persisted as an observation but does not append product history.
+M6 changes the PostgreSQL state-transition read for an existing product to:
 
-## 11. M4 observed failure and correction
+```sql
+SELECT ... FOR UPDATE
+```
+
+The row lock is acquired before converting the row to `CurrentProductState` and before computing the transition. A concurrent worker therefore waits, then evaluates its observation against the latest committed trusted row instead of against a stale snapshot.
+
+`NO_CHANGE` and `STALE` observations are persisted as observations but do not append product history.
+
+## 12. M4 observed failure and correction
 
 Stress testing reversed the same valid variant collection while keeping every variant key/value unchanged.
 
@@ -287,7 +329,37 @@ M4 corrects state equivalence by comparing category membership, variant membersh
 
 The source-shaped/raw representation is not rewritten, preserving traceability.
 
-## 12. Acceptance criteria added by M4
+## 13. M6 concurrent-state failure and correction
+
+M5 protected against a late older observation only when processing was sequential. The persistence path still had a true transaction race:
+
+```text
+trusted state = t0
+
+worker A reads t0; incoming observed_at = t5
+worker B reads t0; incoming observed_at = t3
+
+A computes UPDATE
+B computes UPDATE from the same old snapshot
+
+A commits t5
+B commits later and can overwrite with t3   # temporal regression
+```
+
+The state function itself was correct; the divergence was between the state decision's read snapshot and the database state at commit time.
+
+M6 serializes transitions for an **existing** product row with a PostgreSQL row lock:
+
+```text
+worker A: SELECT ... FOR UPDATE → reads t0
+worker B: SELECT ... FOR UPDATE → waits
+worker A: UPDATE → commit t5
+worker B: lock acquired → reads t5 → incoming t3 becomes STALE
+```
+
+The lock is a persistence mechanism, not a new domain state. `STALE` remains the domain decision produced by the existing M5 temporal rule. Read-only CLI lookups do not acquire the lock.
+
+## 13. Acceptance criteria
 
 ```text
 AC-16 product price change → one UPDATE with correct previous/new snapshots
@@ -298,9 +370,14 @@ AC-20 variant presentation reorder only → NO_CHANGE + no history
 AC-21 category presentation reorder only → NO_CHANGE + no history
 AC-22 CREATE → UPDATE → equivalent replay persists observations but only meaningful history
 AC-23 PostgreSQL preserves the same semantic-history contract
+AC-24 older valid changed observation → STALE + current state unchanged + no history
+AC-25 older equivalent observation → STALE, not NO_CHANGE
+AC-26 stale observation remains persisted/traceable with `state_decision = STALE`
+AC-27 PostgreSQL preserves newer trusted `observed_at`, accepted observation, and history after a stale arrival
+AC-28 two concurrent observations for one existing product → newer UPDATE commits; older worker re-reads committed state and becomes STALE; no lost update or false history
 ```
 
-## 13. Freeze rule
+## 14. Freeze rule
 
 ```text
 new mechanism only if

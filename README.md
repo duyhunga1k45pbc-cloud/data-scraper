@@ -12,6 +12,26 @@ Current milestones:
 - **M3 — ScrapingSandbox:** richer product semantics: compare-at pricing, SKU, categories, variants, and variant stock/price.
 - **M3.1 — identity vs locator:** URL lookup is separated from primary product identity.
 - **M4 — semantic change history:** trusted history records meaningful product changes while ignoring source presentation-order noise.
+- **M5 — temporal correctness:** a valid observation older than the current trusted state is traced as `STALE` and cannot move state/history backward in time.
+
+## M5 finding
+
+A valid observation can arrive late. Processing order is therefore not the same thing as observation time.
+
+M5 adds an explicit temporal state decision:
+
+```text
+current observed_at = 10:05
+late observation    = 10:00
+        ↓
+STALE
+        ↓
+current state unchanged
+history unchanged
+observation still persisted for traceability
+```
+
+The ordering rule uses `observed_at`, not transaction/processing time. M5 intentionally does **not** claim to solve simultaneous database races between concurrent workers; it establishes the temporal rule that a later concurrency mechanism must preserve.
 
 ## M4 finding
 
@@ -61,6 +81,10 @@ Core rule:
 M4 strengthens that rule:
 
 > History records business-state changes, not source presentation-order changes.
+
+M5 adds:
+
+> An older valid observation may be retained as evidence/observation, but it must not overwrite a newer trusted state.
 
 ## Current sources
 
@@ -119,7 +143,7 @@ products
 product_history
 ```
 
-M4 requires **no schema migration**. The existing full-state snapshots are sufficient; only semantic state comparison changed.
+M4 and M5 require **no schema migration**. `product_observations.state_decision` already stores the explicit `STALE` decision, while current state/history remain unchanged.
 
 ## Local PostgreSQL
 
@@ -151,6 +175,26 @@ M4 PostgreSQL change-over-time test:
 RUN_POSTGRES=1 \
 pytest -q tests/integration/test_m4_postgres_change_history.py
 ```
+
+M5 temporal correctness tests:
+
+```bash
+pytest -q \
+  tests/acceptance/test_m5_temporal_state.py \
+  tests/acceptance/test_m5_temporal_persistence.py
+
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m5_postgres_temporal_state.py
+```
+
+M6 concurrent-state correctness (PostgreSQL row-lock proof):
+
+```bash
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m6_postgres_concurrent_state.py
+```
+
+M6 protects an existing product from a stale concurrent worker overwriting a newer commit by locking the current row before the transition decision is computed.
 
 Full integration suite, including live sources:
 

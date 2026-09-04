@@ -20,6 +20,7 @@ class StateDecision(str, Enum):
     CREATE = "CREATE"
     NO_CHANGE = "NO_CHANGE"
     UPDATE = "UPDATE"
+    STALE = "STALE"
     REJECT = "REJECT"
 
 
