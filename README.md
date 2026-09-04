@@ -2,9 +2,12 @@
 
 ## Goal
 
-Collect external book data and maintain a reliable structured state and history.
+Collect external product data from supported sources and maintain a reliable structured current state and history.
 
-M0 uses **Books to Scrape** as the first source.
+M1 supports two sources in the same product-state pipeline:
+
+- **Books to Scrape** — M0 baseline
+- **ScrapeMe** — WooCommerce-style M1 source
 
 ## Core flow
 
@@ -15,121 +18,87 @@ External Source
       ↓
  RawEvidence
       ↓
-BookObservation
+Source Parser
+      ↓
+ProductObservation
       ↓
   Normalize
       ↓
-BookNormalizedData
+ProductNormalizedData
       ↓
    Validate
       ↓
- ValidatedBook
+ValidatedProduct
       ↓
 State Transition
       ↓
-CurrentBookState
+CurrentProductState
       ↓
-  BookHistory
+ ProductHistory
       ↓
-    Deliver
+     CLI
 ```
 
-The core rule is:
+Core rule:
 
-> Only validated and accepted data may change trusted persisted state.
+> Only validated and accepted product data may change trusted persisted state.
 
-The system keeps the representations separate so that a wrong result can be traced back through the exact evidence, extraction, normalization, validation, state decision, and history.
+Every trusted state can be traced back through history → observation → exact raw evidence.
 
-## M0 scope
+## Why M1 changed the M0 design
 
-Tracked fields:
+The second source showed that `Book*` was source/domain vocabulary, while the shared business object is a **Product**. M1 therefore generalizes only the parts proven common by two sources:
 
-- title
-- price
-- currency
-- availability
-- quantity, when available
-- category
-- canonical product URL
+```text
+shared:
+ProductObservation
+ProductNormalizedData
+ValidatedProduct
+CurrentProductState
+ProductHistory
+state transitions
+persistence
+CLI
 
-Identity for M0:
+source-specific:
+HTML parser
+source host recognition
+availability text normalization
+```
+
+M1 does **not** introduce a plugin framework or generic entity model.
+
+ScrapeMe exposes multiple categories, while the M0 contract has one optional category field. M1 deliberately does not invent a primary category; that field is left unset for ScrapeMe until a real requirement justifies changing category cardinality.
+
+## Identity
+
+For M1:
 
 ```text
 source + canonical_product_url
 ```
 
-## Documentation
+URL migration, fuzzy matching, and cross-source entity resolution remain out of scope.
 
-The M0 architecture contract is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+## Persistence
 
-## M0 technology
-
-Planned only where required by the architecture:
-
-- Python
-- httpx
-- BeautifulSoup + lxml
-- Pydantic
-- PostgreSQL
-- SQLAlchemy
-- Alembic
-- pytest
-
-## Non-goals for M0
-
-M0 does not include:
-
-- generic entity abstractions
-- plugin/source-adapter frameworks
-- fuzzy or cross-source identity resolution
-- Redis or Celery
-- Playwright
-- LLM extraction
-- alerts or dashboards
-
-New mechanisms are added only when a new requirement, an observed failure mode, or an invariant that the current mechanism cannot preserve requires them.
-
-## Live source smoke test
-
-The normal test suite is deterministic and does not require network access.
-To exercise the real acquisition boundary against Books to Scrape:
-
-```bash
-RUN_LIVE=1 pytest -q tests/integration/test_books_live.py
-```
-
-This verifies the live path through:
-
-```text
-External Source
-→ HTTP Fetch
-→ RawEvidence
-→ BookObservation
-→ BookNormalizedData
-→ ValidatedBook
-```
-
-## M0 persistence
-
-Persistence is implemented with SQLAlchemy and Alembic over four tables:
+Current M1 tables:
 
 ```text
 raw_evidence
       ↓
-book_observations
+product_observations
       ↓ accepted state decision
-    books
+   products
       ↓
- book_history
+product_history
 ```
 
-`raw_evidence` preserves the exact fetched body. `book_observations` preserves both source-shaped and normalized values plus the state decision and validation errors. `books` contains the current trusted state. `book_history` records only accepted `CREATE` and `UPDATE` transitions and links each transition back to the observation that caused it.
+M1 migration `0002_m1_product_semantics` renames the M0 book-specific tables while preserving existing M0 data.
 
-The current-state mutation and corresponding history append are executed inside one database transaction.
+`raw_evidence` is committed first so exact external input survives a later parser/state failure. Observation + current-state mutation + history append commit together in the trusted-state transaction.
 
-### Local PostgreSQL
-
-A minimal PostgreSQL service is provided in `compose.yaml`:
+## Local PostgreSQL
 
 ```bash
 docker compose up -d postgres
@@ -137,64 +106,75 @@ export DATABASE_URL='postgresql+psycopg://data_scraper:data_scraper@localhost:54
 alembic upgrade head
 ```
 
-Then run the deterministic test suite:
+## Tests
+
+Deterministic suite:
 
 ```bash
 pytest -q
 ```
 
-To exercise persistence against PostgreSQL:
+Live source tests:
+
+```bash
+RUN_LIVE=1 pytest -q tests/integration/test_books_live.py
+RUN_LIVE=1 pytest -q tests/integration/test_scrapeme_live.py
+```
+
+PostgreSQL tests:
 
 ```bash
 RUN_POSTGRES=1 pytest -q tests/integration/test_postgres_persistence.py
 ```
 
-To combine the real external source with persisted state, use `persist_book_url(...)` from `src.storage.service` with a configured SQLAlchemy session factory.
-
-## CLI delivery
-
-The M0 delivery interface is a small command-line interface (CLI). It intentionally
-uses the Python standard library rather than adding another framework.
-
-With PostgreSQL running and `DATABASE_URL` set:
+Full live + PostgreSQL M1 integration:
 
 ```bash
-export DATABASE_URL='postgresql+psycopg://data_scraper:data_scraper@localhost:5433/data_scraper'
+RUN_LIVE=1 RUN_POSTGRES=1 pytest -q tests/integration
 ```
 
-Fetch one book and persist its evidence, observation, state decision, current state,
-and history:
+## CLI
+
+With `DATABASE_URL` configured, the CLI auto-detects the supported source from the URL.
+
+Books to Scrape:
 
 ```bash
 python -m src.main scrape \
   https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html
 ```
 
-Read the current trusted state:
+ScrapeMe:
 
 ```bash
-python -m src.main show \
-  https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html
+python -m src.main scrape \
+  https://scrapeme.live/shop/Charizard/
+```
+
+Read current state:
+
+```bash
+python -m src.main show https://scrapeme.live/shop/Charizard/
 ```
 
 Read accepted state-transition history:
 
 ```bash
-python -m src.main history \
-  https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html
+python -m src.main history https://scrapeme.live/shop/Charizard/
 ```
 
-All three commands emit JSON. After installing the project (`pip install -e .`),
-the equivalent `data-scraper` command is also available.
+## Architecture contract
 
-## Live PostgreSQL end-to-end proof
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-With PostgreSQL running and migrated:
+## Freeze rule
 
-```bash
-export DATABASE_URL='postgresql+psycopg://data_scraper:data_scraper@localhost:5433/data_scraper'
-RUN_LIVE=1 RUN_POSTGRES=1 pytest -q tests/integration/test_live_postgres_e2e.py
+A new mechanism is added only when required by:
+
+```text
+new business requirement
+OR
+observed failure mode
+OR
+current mechanism cannot preserve an invariant
 ```
-
-This verifies the complete M0 path from the live Books to Scrape page through persisted current state and history.
-

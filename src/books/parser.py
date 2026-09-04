@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 
 from src.acquisition.models import RawEvidence
 
-from .models import BookObservation
+from src.products.models import ProductObservation
 
 
 EXTRACTOR_VERSION = "books-to-scrape-v1"
@@ -36,13 +36,13 @@ def _extract_category(soup: BeautifulSoup) -> str | None:
     return _text_or_none(links[-1])
 
 
-def parse_book(evidence: RawEvidence) -> BookObservation:
+def parse_book(evidence: RawEvidence) -> ProductObservation:
     soup = BeautifulSoup(evidence.body, "lxml")
     product = soup.select_one("div.product_main")
     if product is None:
         raise BookExtractionError("PRODUCT_MAIN_NOT_FOUND")
 
-    return BookObservation(
+    return ProductObservation(
         evidence_id=evidence.id,
         extractor_version=EXTRACTOR_VERSION,
         source=SOURCE,

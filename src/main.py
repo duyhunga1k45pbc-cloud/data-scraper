@@ -9,11 +9,15 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Sequence
 
-from src.books.normalization import canonicalize_product_url
-from src.books.parser import SOURCE
+from src.products.normalization import canonicalize_product_url
+from src.products.source import UnsupportedSourceError, source_for_url
 from src.storage.database import create_database_engine, create_session_factory
-from src.storage.repositories import find_book_row, list_book_history_rows, row_to_current_state
-from src.storage.service import persist_book_url
+from src.storage.repositories import (
+    find_product_row,
+    list_product_history_rows,
+    row_to_current_state,
+)
+from src.storage.service import persist_product_url
 
 
 class CliError(RuntimeError):
@@ -49,11 +53,16 @@ def _resolve_database_url(explicit: str | None) -> str:
     return database_url
 
 
-def _canonical_identity(url: str) -> str:
+def _canonical_identity(url: str) -> tuple[str, str]:
+    try:
+        source = source_for_url(url)
+    except UnsupportedSourceError as exc:
+        raise CliError(str(exc)) from exc
+
     canonical = canonicalize_product_url(url)
     if canonical is None:
         raise CliError(f"invalid product URL: {url}")
-    return canonical
+    return source, canonical
 
 
 def _open_session_factory(database_url: str):
@@ -63,15 +72,20 @@ def _open_session_factory(database_url: str):
 
 def _command_scrape(args: argparse.Namespace) -> int:
     database_url = _resolve_database_url(args.database_url)
+    try:
+        source_for_url(args.url)
+    except UnsupportedSourceError as exc:
+        raise CliError(str(exc)) from exc
+
     engine, session_factory = _open_session_factory(database_url)
     try:
-        result = persist_book_url(session_factory, args.url)
+        result = persist_product_url(session_factory, args.url)
         payload = {
             "decision": result.transition.decision,
             "validation_errors": result.transition.validation_errors,
             "evidence_id": result.evidence.id,
             "observation_id": result.observation_id,
-            "book_id": result.book_id,
+            "product_id": result.product_id,
             "current_state": result.transition.current_state,
         }
         _print_json(payload)
@@ -82,17 +96,17 @@ def _command_scrape(args: argparse.Namespace) -> int:
 
 def _command_show(args: argparse.Namespace) -> int:
     database_url = _resolve_database_url(args.database_url)
-    canonical_url = _canonical_identity(args.url)
+    source, canonical_url = _canonical_identity(args.url)
     engine, session_factory = _open_session_factory(database_url)
     try:
         with session_factory() as session:
-            row = find_book_row(
+            row = find_product_row(
                 session,
-                source=SOURCE,
+                source=source,
                 canonical_product_url=canonical_url,
             )
             if row is None:
-                raise CliError(f"book not found for URL: {canonical_url}")
+                raise CliError(f"product not found for URL: {canonical_url}")
             _print_json(row_to_current_state(row))
         return 0
     finally:
@@ -101,17 +115,17 @@ def _command_show(args: argparse.Namespace) -> int:
 
 def _command_history(args: argparse.Namespace) -> int:
     database_url = _resolve_database_url(args.database_url)
-    canonical_url = _canonical_identity(args.url)
+    source, canonical_url = _canonical_identity(args.url)
     engine, session_factory = _open_session_factory(database_url)
     try:
         with session_factory() as session:
-            book = find_book_row(
+            product = find_product_row(
                 session,
-                source=SOURCE,
+                source=source,
                 canonical_product_url=canonical_url,
             )
-            if book is None:
-                raise CliError(f"book not found for URL: {canonical_url}")
+            if product is None:
+                raise CliError(f"product not found for URL: {canonical_url}")
 
             history = [
                 {
@@ -122,7 +136,7 @@ def _command_history(args: argparse.Namespace) -> int:
                     "new_state": row.new_state,
                     "changed_at": row.changed_at,
                 }
-                for row in list_book_history_rows(session, book_id=book.id)
+                for row in list_product_history_rows(session, product_id=product.id)
             ]
             _print_json(history)
         return 0
@@ -133,7 +147,7 @@ def _command_history(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="data-scraper",
-        description="Books M0 command-line interface",
+        description="M1 product scraper CLI (Books to Scrape + ScrapeMe)",
     )
     parser.add_argument(
         "--database-url",
@@ -144,21 +158,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     scrape = subparsers.add_parser(
         "scrape",
-        help="fetch one Books to Scrape product and persist the resulting state decision",
+        help="fetch one supported product URL and persist its state decision",
     )
     scrape.add_argument("url")
     scrape.set_defaults(handler=_command_scrape)
 
     show = subparsers.add_parser(
         "show",
-        help="show the current trusted state for one book URL",
+        help="show current trusted state for one supported product URL",
     )
     show.add_argument("url")
     show.set_defaults(handler=_command_show)
 
     history = subparsers.add_parser(
         "history",
-        help="show accepted state-transition history for one book URL",
+        help="show accepted state-transition history for one supported product URL",
     )
     history.add_argument("url")
     history.set_defaults(handler=_command_history)

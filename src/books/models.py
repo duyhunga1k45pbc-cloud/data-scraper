@@ -1,120 +1,38 @@
-from __future__ import annotations
+"""M0 compatibility names for the shared M1 product-domain contracts."""
 
-from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal
-from enum import Enum
+from src.products.models import (
+    Availability,
+    Currency,
+    CurrentProductState,
+    ProductHistoryEntry,
+    ProductIdentity,
+    ProductNormalizedData,
+    ProductObservation,
+    StateDecision,
+    StateTransitionResult,
+    ValidatedProduct,
+    ValidationErrorCode,
+    ValidationResult,
+)
 
+BookObservation = ProductObservation
+BookNormalizedData = ProductNormalizedData
+BookIdentity = ProductIdentity
+ValidatedBook = ValidatedProduct
+CurrentBookState = CurrentProductState
+BookHistoryEntry = ProductHistoryEntry
 
-class Currency(str, Enum):
-    GBP = "GBP"
-
-
-class Availability(str, Enum):
-    IN_STOCK = "IN_STOCK"
-    OUT_OF_STOCK = "OUT_OF_STOCK"
-
-
-class StateDecision(str, Enum):
-    CREATE = "CREATE"
-    NO_CHANGE = "NO_CHANGE"
-    UPDATE = "UPDATE"
-    REJECT = "REJECT"
-
-
-class ValidationErrorCode(str, Enum):
-    MISSING_TITLE = "MISSING_TITLE"
-    MISSING_PRICE = "MISSING_PRICE"
-    NEGATIVE_PRICE = "NEGATIVE_PRICE"
-    MISSING_CURRENCY = "MISSING_CURRENCY"
-    UNKNOWN_AVAILABILITY = "UNKNOWN_AVAILABILITY"
-    NEGATIVE_QUANTITY = "NEGATIVE_QUANTITY"
-    INCONSISTENT_AVAILABILITY_QUANTITY = "INCONSISTENT_AVAILABILITY_QUANTITY"
-    UNKNOWN_SOURCE = "UNKNOWN_SOURCE"
-    INVALID_CANONICAL_URL = "INVALID_CANONICAL_URL"
-
-
-@dataclass(frozen=True)
-class BookObservation:
-    evidence_id: str
-    extractor_version: str
-    source: str
-    source_url: str
-    observed_at: datetime
-    title_raw: str | None
-    price_raw: str | None
-    availability_raw: str | None
-    category_raw: str | None
-
-
-@dataclass(frozen=True)
-class BookNormalizedData:
-    source: str
-    canonical_product_url: str | None
-    observed_at: datetime
-    title: str | None
-    price: Decimal | None
-    currency: Currency | None
-    availability: Availability | None
-    quantity: int | None
-    category: str | None
-
-
-@dataclass(frozen=True)
-class BookIdentity:
-    source: str
-    canonical_product_url: str
-
-
-@dataclass(frozen=True)
-class ValidatedBook:
-    identity: BookIdentity
-    title: str
-    price: Decimal
-    currency: Currency
-    availability: Availability
-    quantity: int | None
-    category: str | None
-    source_url: str
-    observed_at: datetime
-
-
-@dataclass(frozen=True)
-class CurrentBookState:
-    identity: BookIdentity
-    title: str
-    price: Decimal
-    currency: Currency
-    availability: Availability
-    quantity: int | None
-    category: str | None
-    source_url: str
-    observed_at: datetime
-    updated_at: datetime
-
-
-@dataclass(frozen=True)
-class BookHistoryEntry:
-    identity: BookIdentity
-    decision: StateDecision
-    previous_state: CurrentBookState | None
-    new_state: CurrentBookState
-    changed_at: datetime
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    book: ValidatedBook | None
-    errors: tuple[ValidationErrorCode, ...]
-
-    @property
-    def is_valid(self) -> bool:
-        return self.book is not None and not self.errors
-
-
-@dataclass(frozen=True)
-class StateTransitionResult:
-    decision: StateDecision
-    current_state: CurrentBookState | None
-    history_entry: BookHistoryEntry | None
-    validation_errors: tuple[ValidationErrorCode, ...] = ()
+__all__ = [
+    "Availability",
+    "Currency",
+    "StateDecision",
+    "ValidationErrorCode",
+    "BookObservation",
+    "BookNormalizedData",
+    "BookIdentity",
+    "ValidatedBook",
+    "CurrentBookState",
+    "BookHistoryEntry",
+    "ValidationResult",
+    "StateTransitionResult",
+]

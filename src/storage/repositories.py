@@ -7,19 +7,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.acquisition.models import RawEvidence
-from src.books.models import (
+from src.products.models import (
     Availability,
-    BookHistoryEntry,
-    BookIdentity,
-    BookNormalizedData,
-    BookObservation,
     Currency,
-    CurrentBookState,
+    CurrentProductState,
+    ProductHistoryEntry,
+    ProductIdentity,
+    ProductNormalizedData,
+    ProductObservation,
     StateDecision,
     StateTransitionResult,
 )
 
-from .models import BookHistoryRow, BookObservationRow, BookRow, RawEvidenceRow
+from .models import (
+    ProductHistoryRow,
+    ProductObservationRow,
+    ProductRow,
+    RawEvidenceRow,
+)
 
 
 class PersistenceConflictError(RuntimeError):
@@ -66,40 +71,40 @@ def persist_raw_evidence(session: Session, evidence: RawEvidence) -> RawEvidence
     return row
 
 
-def find_book_row(
+def find_product_row(
     session: Session,
     *,
     source: str,
     canonical_product_url: str | None,
-) -> BookRow | None:
+) -> ProductRow | None:
     if not canonical_product_url:
         return None
 
     return session.scalar(
-        select(BookRow).where(
-            BookRow.source == source,
-            BookRow.canonical_product_url == canonical_product_url,
+        select(ProductRow).where(
+            ProductRow.source == source,
+            ProductRow.canonical_product_url == canonical_product_url,
         )
     )
 
 
-def list_book_history_rows(
+def list_product_history_rows(
     session: Session,
     *,
-    book_id: int,
-) -> list[BookHistoryRow]:
+    product_id: int,
+) -> list[ProductHistoryRow]:
     return list(
         session.scalars(
-            select(BookHistoryRow)
-            .where(BookHistoryRow.book_id == book_id)
-            .order_by(BookHistoryRow.id)
+            select(ProductHistoryRow)
+            .where(ProductHistoryRow.product_id == product_id)
+            .order_by(ProductHistoryRow.id)
         )
     )
 
 
-def row_to_current_state(row: BookRow) -> CurrentBookState:
-    return CurrentBookState(
-        identity=BookIdentity(
+def row_to_current_state(row: ProductRow) -> CurrentProductState:
+    return CurrentProductState(
+        identity=ProductIdentity(
             source=row.source,
             canonical_product_url=row.canonical_product_url,
         ),
@@ -115,23 +120,23 @@ def row_to_current_state(row: BookRow) -> CurrentBookState:
     )
 
 
-def persist_book_observation(
+def persist_product_observation(
     session: Session,
     *,
-    observation: BookObservation,
-    normalized: BookNormalizedData,
+    observation: ProductObservation,
+    normalized: ProductNormalizedData,
     transition: StateTransitionResult,
-) -> BookObservationRow:
+) -> ProductObservationRow:
     existing = session.scalar(
-        select(BookObservationRow).where(
-            BookObservationRow.evidence_id == observation.evidence_id,
-            BookObservationRow.extractor_version == observation.extractor_version,
+        select(ProductObservationRow).where(
+            ProductObservationRow.evidence_id == observation.evidence_id,
+            ProductObservationRow.extractor_version == observation.extractor_version,
         )
     )
     if existing is not None:
         return existing
 
-    row = BookObservationRow(
+    row = ProductObservationRow(
         evidence_id=observation.evidence_id,
         extractor_version=observation.extractor_version,
         source=observation.source,
@@ -158,7 +163,7 @@ def persist_book_observation(
     return row
 
 
-def _state_snapshot(state: CurrentBookState) -> dict[str, object]:
+def _state_snapshot(state: CurrentProductState) -> dict[str, object]:
     return {
         "source": state.identity.source,
         "canonical_product_url": state.identity.canonical_product_url,
@@ -174,13 +179,13 @@ def _state_snapshot(state: CurrentBookState) -> dict[str, object]:
     }
 
 
-def _create_book_row(
+def _create_product_row(
     session: Session,
     *,
-    state: CurrentBookState,
+    state: CurrentProductState,
     observation_id: int,
-) -> BookRow:
-    row = BookRow(
+) -> ProductRow:
+    row = ProductRow(
         source=state.identity.source,
         canonical_product_url=state.identity.canonical_product_url,
         title=state.title,
@@ -199,10 +204,10 @@ def _create_book_row(
     return row
 
 
-def _update_book_row(
-    row: BookRow,
+def _update_product_row(
+    row: ProductRow,
     *,
-    state: CurrentBookState,
+    state: CurrentProductState,
     observation_id: int,
 ) -> None:
     row.title = state.title
@@ -220,12 +225,12 @@ def _update_book_row(
 def _append_history(
     session: Session,
     *,
-    book_id: int,
+    product_id: int,
     observation_id: int,
-    history: BookHistoryEntry,
-) -> BookHistoryRow:
-    row = BookHistoryRow(
-        book_id=book_id,
+    history: ProductHistoryEntry,
+) -> ProductHistoryRow:
+    row = ProductHistoryRow(
+        product_id=product_id,
         observation_id=observation_id,
         decision=history.decision.value,
         previous_state=(
@@ -244,47 +249,80 @@ def _append_history(
 def apply_state_transition(
     session: Session,
     *,
-    existing_book: BookRow | None,
+    existing_product: ProductRow | None = None,
     transition: StateTransitionResult,
     observation_id: int,
-) -> BookRow | None:
+    # M0 compatibility keyword.
+    existing_book: ProductRow | None = None,
+) -> ProductRow | None:
+    if existing_product is None:
+        existing_product = existing_book
+
     if transition.decision in {StateDecision.REJECT, StateDecision.NO_CHANGE}:
-        return existing_book
+        return existing_product
 
     if transition.current_state is None or transition.history_entry is None:
         raise ValueError("state-changing transition requires current state and history")
 
     if transition.decision == StateDecision.CREATE:
-        if existing_book is not None:
-            raise ValueError("CREATE transition cannot be applied to an existing book")
-        book_row = _create_book_row(
+        if existing_product is not None:
+            raise ValueError("CREATE transition cannot be applied to an existing product")
+        product_row = _create_product_row(
             session,
             state=transition.current_state,
             observation_id=observation_id,
         )
         _append_history(
             session,
-            book_id=book_row.id,
+            product_id=product_row.id,
             observation_id=observation_id,
             history=transition.history_entry,
         )
-        return book_row
+        return product_row
 
     if transition.decision == StateDecision.UPDATE:
-        if existing_book is None:
-            raise ValueError("UPDATE transition requires an existing book")
-        _update_book_row(
-            existing_book,
+        if existing_product is None:
+            raise ValueError("UPDATE transition requires an existing product")
+        _update_product_row(
+            existing_product,
             state=transition.current_state,
             observation_id=observation_id,
         )
         session.flush()
         _append_history(
             session,
-            book_id=existing_book.id,
+            product_id=existing_product.id,
             observation_id=observation_id,
             history=transition.history_entry,
         )
-        return existing_book
+        return existing_product
 
     raise ValueError(f"unsupported state decision: {transition.decision}")
+
+
+# M0 compatibility API aliases.
+def find_book_row(session: Session, *, source: str, canonical_product_url: str | None) -> ProductRow | None:
+    return find_product_row(
+        session,
+        source=source,
+        canonical_product_url=canonical_product_url,
+    )
+
+
+def list_book_history_rows(session: Session, *, book_id: int) -> list[ProductHistoryRow]:
+    return list_product_history_rows(session, product_id=book_id)
+
+
+def persist_book_observation(
+    session: Session,
+    *,
+    observation,
+    normalized,
+    transition,
+) -> ProductObservationRow:
+    return persist_product_observation(
+        session,
+        observation=observation,
+        normalized=normalized,
+        transition=transition,
+    )

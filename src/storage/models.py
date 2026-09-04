@@ -13,7 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, synonym
 
 
 class Base(DeclarativeBase):
@@ -32,13 +32,13 @@ class RawEvidenceRow(Base):
     body_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
-class BookObservationRow(Base):
-    __tablename__ = "book_observations"
+class ProductObservationRow(Base):
+    __tablename__ = "product_observations"
     __table_args__ = (
         UniqueConstraint(
             "evidence_id",
             "extractor_version",
-            name="uq_book_observation_evidence_extractor",
+            name="uq_product_observation_evidence_extractor",
         ),
     )
 
@@ -70,13 +70,13 @@ class BookObservationRow(Base):
     validation_errors: Mapped[list[str]] = mapped_column(JSON, nullable=False)
 
 
-class BookRow(Base):
-    __tablename__ = "books"
+class ProductRow(Base):
+    __tablename__ = "products"
     __table_args__ = (
         UniqueConstraint(
             "source",
             "canonical_product_url",
-            name="uq_books_source_canonical_url",
+            name="uq_products_source_canonical_url",
         ),
     )
 
@@ -94,26 +94,36 @@ class BookRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_observation_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("book_observations.id", ondelete="RESTRICT"),
+        ForeignKey("product_observations.id", ondelete="RESTRICT"),
         nullable=False,
     )
 
 
-class BookHistoryRow(Base):
-    __tablename__ = "book_history"
+class ProductHistoryRow(Base):
+    __tablename__ = "product_history"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    book_id: Mapped[int] = mapped_column(
+    product_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("books.id", ondelete="CASCADE"),
+        ForeignKey("products.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # M0 compatibility: tests/callers may still use .book_id while migrating.
+    book_id = synonym("product_id")
+
     observation_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("book_observations.id", ondelete="RESTRICT"),
+        ForeignKey("product_observations.id", ondelete="RESTRICT"),
         nullable=False,
     )
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
     previous_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     new_state: Mapped[dict] = mapped_column(JSON, nullable=False)
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# Compatibility aliases keep M0 tests and imports valid while M1 moves the
+# persistence vocabulary from book-specific to shared product semantics.
+BookObservationRow = ProductObservationRow
+BookRow = ProductRow
+BookHistoryRow = ProductHistoryRow

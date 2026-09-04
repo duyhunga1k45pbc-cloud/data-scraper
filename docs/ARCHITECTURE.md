@@ -1,46 +1,43 @@
-# Data Scraper — M0 Architecture Contract
+# Data Scraper — Architecture Contract
 
-## 1. Scope
+## 1. Current scope: M1
 
-M0 targets **Books to Scrape**.
+M0 proved one trustworthy observation-to-state loop using Books to Scrape.
 
-The purpose of M0 is not to build a generic scraping framework. It is to build one trustworthy observation-to-state loop for a simple product-like domain, then use a later real e-commerce source to discover what actually generalizes.
+M1 adds a second e-commerce-shaped source, ScrapeMe, to discover what actually generalizes. M1 is not a generic scraping framework.
+
+Supported sources:
+
+```text
+books.toscrape.com → books_to_scrape
+scrapeme.live      → scrapeme_live
+```
 
 ## 2. Business goal
 
-> Collect external book data and maintain a reliable structured state and history.
+> Collect external product data and maintain a reliable structured current state and history.
 
-Core business flow:
-
-```text
-Acquire
-→ Structure
-→ Data State
-→ History
-→ Deliver
-```
-
-### Business requirements
+Core business requirements:
 
 **BR-01 — Acquire**  
-Collect book records inside the configured source scope.
+Collect product data from a supported external source.
 
 **BR-02 — Structure**  
-Extract and normalize the required fields into a defined schema.
+Extract and normalize required fields into a defined product schema.
 
-**BR-03 — Data State**  
-Make it possible to explain which representation the data is in, whether it is accepted for persistence, and why.
+**BR-03 — Data state**  
+Explain which representation data is in, whether it was accepted, and why.
 
 **BR-04 — Current trusted state**  
-Maintain the current trusted representation of each book. Invalid or failed data must not silently overwrite trusted state.
+Maintain one trusted current state per source product identity. Invalid/failed data must not silently overwrite it.
 
 **BR-05 — History**  
-Preserve accepted trusted state transitions so that state evolution can be explained.
+Preserve accepted trusted state transitions.
 
 **BR-06 — Deliver**  
-Expose current state and history as structured data for downstream use.
+Expose current state and history as structured CLI output.
 
-## 3. Core architecture
+## 3. Current architecture
 
 ```text
 External Source
@@ -51,40 +48,37 @@ External Source
 │   RawEvidence   │
 │ exact response  │
 └────────┬────────┘
-         ↓ extract
-┌─────────────────┐
-│ BookObservation │
-│ source-shaped   │
-└────────┬────────┘
-         ↓ normalize
+         ↓ source-specific extraction
 ┌────────────────────┐
-│ BookNormalizedData │
+│ ProductObservation │
 └─────────┬──────────┘
-          ↓ validate
-┌─────────────────┐
-│  ValidatedBook  │
-└────────┬────────┘
+          ↓ normalization
+┌───────────────────────┐
+│ ProductNormalizedData │
+└───────────┬───────────┘
+            ↓ validation
+┌──────────────────┐
+│ ValidatedProduct │
+└────────┬─────────┘
          ↓
-  State Transition
-   ┌─────┼───────────┐
-   │     │           │
- CREATE NO_CHANGE   UPDATE
-   │                 │
-   └────────┬────────┘
+   State Transition
+ ┌───────┼─────────────┐
+ │       │             │
+CREATE NO_CHANGE     UPDATE
+ │                     │
+ └──────────┬──────────┘
             ↓
-   CurrentBookState
+ CurrentProductState
             ↓
-       BookHistory
+      ProductHistory
             ↓
-         Deliver
+           CLI
 ```
 
-If validation fails:
+Validation failure:
 
 ```text
-BookNormalizedData
-        ↓
- validation failed
+ProductNormalizedData
         ↓
       REJECT
         ↓
@@ -94,25 +88,19 @@ history unchanged
 
 ## 4. Representation boundaries
 
-The following are deliberately different representations:
-
 ```text
 RawEvidence
-!= BookObservation
-!= BookNormalizedData
-!= ValidatedBook
-!= CurrentBookState
+!= ProductObservation
+!= ProductNormalizedData
+!= ValidatedProduct
+!= CurrentProductState
 ```
 
-A representation becoming parseable does not imply that it is valid, and valid data does not imply that it must change state.
-
-### 4.1 RawEvidence
+### RawEvidence
 
 Purpose:
 
-> Preserve the exact input required to verify and reproduce extraction.
-
-Minimum M0 fields:
+> Preserve the exact input required to verify/replay extraction.
 
 ```text
 id
@@ -124,21 +112,14 @@ body
 body_hash
 ```
 
-`body` is the exact response content used by the parser.
+### ProductObservation
 
-`body_hash` may identify or compare content, but it does not replace the body because a hash cannot reproduce extraction.
-
-Raw evidence is append-oriented in the normal application flow. Existing evidence is not rewritten as part of normal processing.
-
-### 4.2 BookObservation
-
-Represents what the extractor observed from the evidence, as close to the source representation as practical.
-
-Minimum M0 fields:
+Source-shaped interpretation of evidence:
 
 ```text
 evidence_id
 extractor_version
+source
 source_url
 observed_at
 
@@ -148,536 +129,334 @@ availability_raw
 category_raw
 ```
 
-Example:
+Observation is not trusted business data.
+
+### ProductNormalizedData
+
+Typed/normalized representation:
 
 ```text
-price_raw = "£51.77"
-availability_raw = "In stock (22 available)"
-```
-
-An observation is not yet trusted business data.
-
-### 4.3 BookNormalizedData
-
-Normalization changes representation but does not decide whether the result has valid domain meaning.
-
-Examples:
-
-```text
-"£51.77"
-→ price = Decimal("51.77")
-→ currency = GBP
-```
-
-```text
-"In stock (22 available)"
-→ availability = IN_STOCK
-→ quantity = 22
-```
-
-Conceptual M0 fields:
-
-```text
-title
-price
-currency
-availability
-quantity
-category
+source
 canonical_product_url
-```
-
-Core rule:
-
-> Parseable != Valid
-
-### 4.4 ValidatedBook
-
-`ValidatedBook` exists only after normalized data satisfies the M0 domain validation rules.
-
-It is the boundary into state-transition logic:
-
-> Only ValidatedBook may enter state-transition logic.
-
-### 4.5 CurrentBookState
-
-`CurrentBookState` is the current trusted representation of a book.
-
-It is not simply the latest scraped value.
-
-Conceptual fields:
-
-```text
-identity
+observed_at
 title
 price
 currency
 availability
 quantity
 category
-source_url
-observed_at
-updated_at
 ```
 
-### 4.6 BookHistory
+Normalization answers whether a representation can be converted. It does not decide whether the resulting business meaning is valid.
 
-History contains accepted trusted state transitions only.
+### ValidatedProduct
 
-A failed scrape, failed normalization, or rejected validation is not a business state transition.
-
-## 5. Validation
-
-Validation protects the meaning of data before it is allowed to influence trusted state.
-
-### 5.1 Field validation
-
-**Title**
+The domain boundary accepted by state-transition logic.
 
 ```text
-must exist
-must not be empty
+Only ValidatedProduct may enter a state-changing decision.
 ```
 
-**Price**
+### CurrentProductState
+
+The current trusted representation used by downstream consumers. It is not simply the latest scrape result.
+
+### ProductHistory
+
+Contains only accepted `CREATE` and `UPDATE` transitions. Failed/rejected/no-change observations do not become trusted history entries.
+
+## 5. M1 source boundary
+
+The second source provided evidence for a small shared `Product` contract, but not for a plugin framework.
+
+### Shared across both sources
 
 ```text
-must exist
-must be representable as Decimal
-must be >= 0
+ProductObservation shape
+price/currency domain type
+availability domain type
+validation semantics
+identity rule
+state transitions
+current-state persistence
+history
+traceability
+CLI delivery
 ```
 
-**Currency**
+### Still source-specific
 
 ```text
-must be recognized
+HTML selectors / parser
+extractor version
+source host recognition
+availability text shape
 ```
 
-**Availability**
+Current availability examples:
 
 ```text
-must map to a recognized state
+Books to Scrape:
+"In stock (22 available)"
+→ IN_STOCK, quantity=22
+
+ScrapeMe:
+"31 in stock"
+→ IN_STOCK, quantity=31
 ```
 
-**Quantity**
+M1 handles these explicitly. No source-adapter framework is introduced yet.
+
+## 6. M1 schema decision: category
+
+Books to Scrape exposes one book category. ScrapeMe/WooCommerce can expose multiple categories.
+
+The M0 contract contains one optional `category` field. M1 does not guess which ScrapeMe category is primary, so the shared category field is left unset for that source.
+
+This is an observed schema mismatch, not a reason by itself to invent a larger category abstraction. A future business requirement may justify changing the contract to multiple categories.
+
+## 7. Validation
+
+Field rules:
 
 ```text
-if present, must be >= 0
+title
+- required
+- non-empty
+
+price
+- required
+- parseable Decimal
+- >= 0
+
+currency
+- recognized
+
+availability
+- recognized
+
+quantity
+- if present, >= 0
 ```
 
-### 5.2 Cross-field consistency
-
-Fields that are individually valid must also be semantically consistent together.
-
-Example:
+Cross-field rule:
 
 ```text
-availability = OUT_OF_STOCK
-quantity = 22
+OUT_OF_STOCK + quantity > 0
 → invalid
 ```
 
-Another example when currency is required for a price:
+Identity validity:
 
 ```text
-price = 51.77
-currency = missing
-→ invalid
+source must be supported
+canonical URL must belong to the configured host for that source
 ```
 
-### 5.3 Identity validity
+Core distinction:
 
-M0 does not have a separate identity-resolution subsystem.
+```text
+Parseable != Valid
+```
 
-Identity is:
+## 8. Identity
+
+M1 identity remains:
 
 ```text
 source + canonical_product_url
 ```
 
-Validation checks only what M0 needs:
+This is enough for the two current sources.
+
+Deferred until observed need:
 
 ```text
-source is known
-canonical product URL exists
-URL can be normalized into the expected form
+URL migration
+SKU-based identity
+fuzzy identity
+cross-source entity resolution
 ```
 
-URL migration, fuzzy matching, and cross-source identity resolution are explicitly outside M0.
+## 9. State transitions
 
-## 6. Data State
-
-Data State answers:
-
-> What representation is this data currently in, is it allowed to become persisted trusted state, and why?
-
-Example:
+### CREATE
 
 ```text
-price_raw = "-£51.77"
-        ↓
-normalized
-price = -51.77 GBP
-        ↓
-validation
-NEGATIVE_PRICE
-        ↓
-REJECT
-        ↓
-CurrentBookState unchanged
-BookHistory unchanged
+no current state
++ ValidatedProduct
+→ create current state
+→ append initial history
 ```
 
-The system should be able to explain:
+### NO_CHANGE
 
 ```text
-Rejected because NEGATIVE_PRICE
+current state
++ equivalent ValidatedProduct
+→ state unchanged
+→ no history entry
 ```
 
-rather than only reporting a generic failure.
-
-## 7. State transition rules
-
-State-transition behavior is part of the core architecture.
-
-### ST-01 — Create
+### UPDATE
 
 ```text
-No existing current state
-+
-ValidatedBook
-        ↓
-CREATE CurrentBookState
-+
-APPEND initial history
+current state
++ different ValidatedProduct
+→ update current state
+→ append exactly one history entry
 ```
 
-### ST-02 — No change
+### REJECT
 
 ```text
-Existing CurrentBookState
-+
-same ValidatedBook
-        ↓
-NO_CHANGE
-state unchanged
-history unchanged
+invalid normalized data
+→ current state unchanged
+→ history unchanged
 ```
 
-### ST-03 — Update
+## 10. Invariants
 
-```text
-Existing CurrentBookState
-+
-different ValidatedBook
-        ↓
-UPDATE CurrentBookState
-+
-APPEND history
-```
+**INV-01**  
+Only validated + accepted data may modify trusted state.
 
-### ST-04 — Reject invalid data
+**INV-02**  
+Invalid/failed data must not modify current trusted state.
 
-```text
-Existing CurrentBookState
-+
-validation failure
-        ↓
-REJECT
-state unchanged
-history unchanged
-```
+**INV-03**  
+One `(source, canonical_product_url)` identity has at most one current state.
 
-Conceptually:
+**INV-04**  
+Persisted current state must satisfy domain validation.
 
-```text
-S(t+1) = S(t)     when input is invalid
-S(t+1) = S(t)     when validated input is unchanged
-S(t+1) = S(new)   when a validated change is accepted
-```
+**INV-05**  
+Current-state update + history append form one atomic trusted-state transaction.
 
-## 8. Invariants
+**INV-06**  
+Reprocessing equivalent state must not create duplicate trusted transitions/history.
 
-### INV-01
+**INV-07**  
+History must not contain a transition trusted state never actually underwent.
 
-Only validated and accepted data may modify trusted persisted state.
+## 11. Persistence
 
-### INV-02
-
-Invalid or failed data must not modify current trusted state.
-
-### INV-03
-
-One M0 source identity has at most one current book state.
-
-### INV-04
-
-Persisted current state must satisfy the domain validation rules.
-
-### INV-05
-
-Current-state update and history append form one logical atomic transition.
-
-A successful state change without corresponding history, or history that claims a change not reflected by current state, is invalid system behavior.
-
-### INV-06
-
-Reprocessing the same effective state must not create duplicate state transitions or duplicate history.
-
-### INV-07
-
-History must not contain a transition that trusted state never actually underwent.
-
-## 9. Persistence M0
-
-M0 persists four kinds of data:
+M1 persistence:
 
 ```text
 raw_evidence
       ↓
-book_observations
+product_observations
       ↓ accepted
-    books
+   products
       ↓
-book_history
+product_history
 ```
 
-Their meanings are distinct:
+Meaning:
 
-| Persisted representation | Question it answers |
+| Table | Question answered |
 |---|---|
 | `raw_evidence` | What exact response did the source return? |
-| `book_observations` | What did the extractor/process interpret from that evidence? |
-| `books` | What does the system currently trust? |
-| `book_history` | How did trusted state actually change? |
+| `product_observations` | What did the extractor/normalizer interpret from it? |
+| `products` | What does the system currently trust? |
+| `product_history` | How did trusted state actually change? |
 
-Persistence design must preserve the invariants above, especially the atomic relationship between current-state updates and history.
+M1 migration `0002_m1_product_semantics` renames M0's book-specific tables while preserving existing data.
 
-### 9.1 Implemented persistence contract
+Raw evidence commits first. If later extraction/state work fails, exact evidence remains available for divergence tracing.
 
-M0 persistence uses the four tables above without introducing a generic repository or entity framework.
+Observation + current-state mutation + history append are committed together in the trusted-state transaction.
 
-`book_observations` stores both source-shaped and normalized values, plus the state decision and validation errors. This preserves the divergence path through observation, normalization, and validation while keeping the persistence model at four tables.
-
-`books.accepted_observation_id` identifies the observation that produced the current trusted state. A `NO_CHANGE` or `REJECT` observation does not replace that provenance.
-
-`book_history.observation_id` identifies the observation that caused each accepted `CREATE` or `UPDATE` transition.
-
-For `CREATE` and `UPDATE`, current-state mutation and history append are committed in the same database transaction to enforce INV-05. Raw evidence is committed before extraction/state persistence so the exact external input remains available even if a later processing step fails.
-
-## 10. Divergence tracing
-
-The architecture must allow a result to be traced backward through the representation chain:
+## 12. Divergence tracing
 
 ```text
-BookHistory
-     ↑
-CurrentBookState
-     ↑
-State Decision
-     ↑
-ValidatedBook
-     ↑
-BookNormalizedData
-     ↑
-BookObservation
-     ↑
 RawEvidence
+    ↓
+ProductObservation
+    ↓
+ProductNormalizedData
+    ↓
+ValidatedProduct / validation result
+    ↓
+State Decision
+    ↓
+CurrentProductState
+    ↓
+ProductHistory
 ```
 
-Examples:
+A wrong persisted value can therefore be traced to the first boundary where representation stopped corresponding to its input.
+
+## 13. M1 acceptance evidence
+
+Deterministic tests must prove at least:
 
 ```text
-RawEvidence:    £51.77
-Observation:    £15.77
+Books source still reaches the shared Product state contract.
+ScrapeMe source reaches the same Product state contract.
+Both sources persist into the same products/history model.
+Same state remains idempotent.
+Invalid data cannot mutate trusted state.
+State update + history append rollback together on failure.
+Unsupported source host is rejected before fetch.
 ```
 
-Divergence is at extraction.
+Live tests may additionally prove:
 
 ```text
-Observation:    £51.77
-Normalized:     15.77 GBP
+books.toscrape.com → shared Product state
+scrapeme.live      → shared Product state
+live source → PostgreSQL → trace back to RawEvidence
 ```
 
-Divergence is at normalization.
-
-```text
-Normalized:     -51.77 GBP
-Validation:     VALID
-```
-
-Divergence is at validation.
-
-```text
-ValidatedBook:  45.00 GBP
-Persisted state:51.77 GBP
-```
-
-Divergence is in state-transition or persistence behavior.
-
-The goal is end-to-end divergence tracing from exact external evidence to trusted state and history.
-
-## 11. Acceptance criteria
-
-Acceptance tests are executable evidence that the architecture behaves as specified. They assert business behavior rather than internal class/function structure.
-
-### AC-01 — Valid new book
-
-```text
-Given no existing book
-When a valid £51.77 observation is processed
-Then current state is created with price £51.77
-And initial history exists
-```
-
-### AC-02 — Idempotent same state
-
-```text
-Given current price = £51.77
-When the same valid data is processed again
-Then current state is unchanged
-And no additional history entry is created
-```
-
-### AC-03 — Invalid negative price
-
-```text
-Given current price = £51.77
-When normalized price = -£10
-Then validation rejects the data
-And current price remains £51.77
-And history remains unchanged
-```
-
-### AC-04 — Missing required price
-
-```text
-Given current price = £51.77
-When a required price cannot be produced
-Then the data is rejected
-And current state remains £51.77
-And history remains unchanged
-```
-
-### AC-05 — Valid state transition
-
-```text
-Given current price = £51.77
-When valid price = £45.00 is processed
-Then current price becomes £45.00
-And exactly one history transition is appended
-```
-
-### AC-06 — Evidence-to-observation correspondence
-
-```text
-Given raw evidence containing price £51.77
-When extraction runs
-Then the resulting observation must correspond to £51.77
-```
-
-### AC-07 — Atomic state/history rollback
-
-```text
-Given current price = £51.77
-When a valid £45.00 update reaches persistence
-And history append fails after the current-state row has been updated in the transaction
-Then the entire state transaction rolls back
-And current price remains £51.77
-And no new history entry exists
-And no accepted observation from the failed transaction remains
-And the exact RawEvidence remains persisted for audit/replay
-```
-
-### AC-08 — Live source to persisted state trace
-
-```text
-Given the live Books to Scrape product page and PostgreSQL
-When the full M0 pipeline runs
-Then the persisted current state and history are traceable
-through the accepted observation to the exact RawEvidence
-captured from the live source
-```
-
-### AC-09 — CLI delivery
-
-```text
-Given a persisted trusted book state and history
-When a downstream user invokes the M0 CLI
-Then `show` returns the current trusted state
-And `history` returns accepted state transitions
-And `scrape` runs the live acquisition-to-persistence path and reports its state decision
-```
-
-The CLI is a delivery mechanism only. It must not duplicate validation or state-transition rules; it composes the existing acquisition, domain, and persistence services.
-
-## 12. M0 code boundaries
-
-Initial code structure:
+## 14. Current code boundaries
 
 ```text
 src/
 ├── acquisition/
-│   └── fetch.py
-│
-├── books/
-│   ├── parser.py
-│   ├── observation.py
+│   ├── fetch.py
+│   └── models.py
+├── products/
+│   ├── models.py
 │   ├── normalization.py
 │   ├── validation.py
 │   ├── state.py
-│   └── models.py
-│
+│   ├── source.py
+│   └── service.py
+├── books/
+│   └── parser.py          # Books source parser + M0 compatibility wrappers
+├── scrapeme/
+│   └── parser.py          # ScrapeMe source parser
 ├── storage/
 │   ├── models.py
-│   └── repositories.py
-│
-└── main.py              # CLI delivery composition only
-
-tests/
+│   ├── repositories.py
+│   └── service.py
+└── main.py
 ```
 
-This is not a generic framework boundary. It is only the M0 implementation boundary for Books to Scrape.
+`books/` compatibility wrappers remain temporarily so the M0 contracts/tests continue to prove backward behavior while M1 introduces shared Product semantics.
 
-## 13. M0 technology
+## 15. Explicit non-goals
 
-Planned mechanisms:
-
-```text
-Python
-httpx
-BeautifulSoup + lxml
-Pydantic
-PostgreSQL
-SQLAlchemy
-Alembic
-pytest
-```
-
-A mechanism should only be introduced when the architecture currently requires it.
-
-## 14. Explicit M0 non-goals
-
-Do not introduce these in M0 without new evidence that they are required:
+Do not add without new evidence:
 
 ```text
 GenericEntity
-BaseSourceAdapter
-plugin architecture
-generic domain model
+plugin/source-adapter framework
 fuzzy identity resolution
 cross-source entity resolution
+variant model
+sale/original-price model
 Redis
 Celery
 Playwright
 LLM extraction
 alerts
-dashboards
+dashboard
+raw-evidence retention/dedup/object storage
 ```
 
-## 15. Development loop
-
-The project follows this loop:
+## 16. Development loop
 
 ```text
 Business Requirements
@@ -701,11 +480,9 @@ Observed Failure Modes
 Architecture evolves only if required
 ```
 
-Failure modes are not exhaustively invented in advance. Once the core architecture runs against real inputs, observed failures are used to test whether a requirement, invariant, validation rule, or mechanism must change.
+## 17. Freeze rule
 
-## 16. Freeze rule
-
-A new mechanism is added only when at least one of the following is true:
+A new mechanism is added only when at least one is true:
 
 ```text
 new business requirement
@@ -715,14 +492,4 @@ OR
 current mechanism cannot preserve an invariant
 ```
 
-Do not add infrastructure, abstractions, or frameworks merely because they are common, modern, or potentially useful later.
-
-## 17. M0 freeze point
-
-This document is the M0 architecture contract.
-
-The next implementation step is to create the minimal code skeleton and acceptance tests that make this contract executable.
-
-After M0 works against Books to Scrape, a real e-commerce source should be used to reveal which abstractions are actually shared before any generic framework is introduced.
-
-
+M1 deliberately stops at two supported sources and one shared Product contract. A third source should be used to determine whether a real adapter abstraction is justified.
