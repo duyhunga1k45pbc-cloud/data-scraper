@@ -40,6 +40,18 @@ def _same_datetime(left: datetime, right: datetime) -> bool:
     return as_utc(left) == as_utc(right)
 
 
+def _identity_key(
+    *,
+    canonical_product_url: str | None,
+    source_record_id: str | None,
+) -> str | None:
+    if source_record_id:
+        return f"id:{source_record_id}"
+    if canonical_product_url:
+        return f"url:{canonical_product_url}"
+    return None
+
+
 def persist_raw_evidence(session: Session, evidence: RawEvidence) -> RawEvidenceRow:
     existing = session.get(RawEvidenceRow, evidence.id)
     if existing is not None:
@@ -75,15 +87,21 @@ def find_product_row(
     session: Session,
     *,
     source: str,
-    canonical_product_url: str | None,
+    canonical_product_url: str | None = None,
+    source_record_id: str | None = None,
+    identity_key: str | None = None,
 ) -> ProductRow | None:
-    if not canonical_product_url:
+    key = identity_key or _identity_key(
+        canonical_product_url=canonical_product_url,
+        source_record_id=source_record_id,
+    )
+    if key is None:
         return None
 
     return session.scalar(
         select(ProductRow).where(
             ProductRow.source == source,
-            ProductRow.canonical_product_url == canonical_product_url,
+            ProductRow.identity_key == key,
         )
     )
 
@@ -107,6 +125,7 @@ def row_to_current_state(row: ProductRow) -> CurrentProductState:
         identity=ProductIdentity(
             source=row.source,
             canonical_product_url=row.canonical_product_url,
+            source_record_id=row.source_record_id,
         ),
         title=row.title,
         price=Decimal(row.price),
@@ -127,10 +146,24 @@ def persist_product_observation(
     normalized: ProductNormalizedData,
     transition: StateTransitionResult,
 ) -> ProductObservationRow:
+    key = _identity_key(
+        canonical_product_url=normalized.canonical_product_url,
+        source_record_id=normalized.source_record_id,
+    )
+    # Invalid identity still needs a deterministic observation key so the
+    # rejected observation can be traced without colliding with another record
+    # from the same multi-record evidence payload.
+    if key is None:
+        key = (
+            f"rejected:{observation.source_record_id_raw or observation.source_url}:"
+            f"{observation.title_raw or ''}"
+        )
+
     existing = session.scalar(
         select(ProductObservationRow).where(
             ProductObservationRow.evidence_id == observation.evidence_id,
             ProductObservationRow.extractor_version == observation.extractor_version,
+            ProductObservationRow.identity_key == key,
         )
     )
     if existing is not None:
@@ -140,10 +173,13 @@ def persist_product_observation(
         evidence_id=observation.evidence_id,
         extractor_version=observation.extractor_version,
         source=observation.source,
+        identity_key=key,
+        source_record_id=normalized.source_record_id,
         source_url=observation.source_url,
         observed_at=observation.observed_at,
         title_raw=observation.title_raw,
         price_raw=observation.price_raw,
+        currency_raw=observation.currency_raw,
         availability_raw=observation.availability_raw,
         category_raw=observation.category_raw,
         canonical_product_url=normalized.canonical_product_url,
@@ -166,6 +202,8 @@ def persist_product_observation(
 def _state_snapshot(state: CurrentProductState) -> dict[str, object]:
     return {
         "source": state.identity.source,
+        "identity_key": state.identity.key,
+        "source_record_id": state.identity.source_record_id,
         "canonical_product_url": state.identity.canonical_product_url,
         "title": state.title,
         "price": str(state.price),
@@ -187,6 +225,8 @@ def _create_product_row(
 ) -> ProductRow:
     row = ProductRow(
         source=state.identity.source,
+        identity_key=state.identity.key,
+        source_record_id=state.identity.source_record_id,
         canonical_product_url=state.identity.canonical_product_url,
         title=state.title,
         price=state.price,
@@ -210,6 +250,9 @@ def _update_product_row(
     state: CurrentProductState,
     observation_id: int,
 ) -> None:
+    row.identity_key = state.identity.key
+    row.source_record_id = state.identity.source_record_id
+    row.canonical_product_url = state.identity.canonical_product_url
     row.title = state.title
     row.price = state.price
     row.currency = state.currency.value
@@ -252,7 +295,6 @@ def apply_state_transition(
     existing_product: ProductRow | None = None,
     transition: StateTransitionResult,
     observation_id: int,
-    # M0 compatibility keyword.
     existing_book: ProductRow | None = None,
 ) -> ProductRow | None:
     if existing_product is None:
@@ -301,7 +343,12 @@ def apply_state_transition(
 
 
 # M0 compatibility API aliases.
-def find_book_row(session: Session, *, source: str, canonical_product_url: str | None) -> ProductRow | None:
+def find_book_row(
+    session: Session,
+    *,
+    source: str,
+    canonical_product_url: str | None,
+) -> ProductRow | None:
     return find_product_row(
         session,
         source=source,

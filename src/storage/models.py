@@ -38,7 +38,8 @@ class ProductObservationRow(Base):
         UniqueConstraint(
             "evidence_id",
             "extractor_version",
-            name="uq_product_observation_evidence_extractor",
+            "identity_key",
+            name="uq_product_observation_evidence_extractor_identity",
         ),
     )
 
@@ -50,11 +51,14 @@ class ProductObservationRow(Base):
     )
     extractor_version: Mapped[str] = mapped_column(String(128), nullable=False)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
+    identity_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_record_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     title_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
     price_raw: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    currency_raw: Mapped[str | None] = mapped_column(String(32), nullable=True)
     availability_raw: Mapped[str | None] = mapped_column(String(255), nullable=True)
     category_raw: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
@@ -75,14 +79,16 @@ class ProductRow(Base):
     __table_args__ = (
         UniqueConstraint(
             "source",
-            "canonical_product_url",
-            name="uq_products_source_canonical_url",
+            "identity_key",
+            name="uq_products_source_identity_key",
         ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
-    canonical_product_url: Mapped[str] = mapped_column(Text, nullable=False)
+    identity_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_record_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    canonical_product_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -108,7 +114,6 @@ class ProductHistoryRow(Base):
         ForeignKey("products.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # M0 compatibility: tests/callers may still use .book_id while migrating.
     book_id = synonym("product_id")
 
     observation_id: Mapped[int] = mapped_column(
@@ -122,8 +127,6 @@ class ProductHistoryRow(Base):
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-# Compatibility aliases keep M0 tests and imports valid while M1 moves the
-# persistence vocabulary from book-specific to shared product semantics.
 BookObservationRow = ProductObservationRow
 BookRow = ProductRow
 BookHistoryRow = ProductHistoryRow

@@ -2,101 +2,108 @@
 
 ## Goal
 
-Collect external product data from supported sources and maintain a reliable structured current state and history.
+Collect external product data and maintain a reliable structured current state and history.
 
-M1 supports two sources in the same product-state pipeline:
+Current milestones:
 
-- **Books to Scrape** — M0 baseline
-- **ScrapeMe** — WooCommerce-style M1 source
+- **M0 — Books to Scrape:** one static HTML source, end-to-end correctness loop.
+- **M1 — ScrapeMe:** second HTML e-commerce source, shared `Product` state contract.
+- **M2 — Scrapify JS storefront:** dynamic page whose product grid is injected by JavaScript from a public JSON request.
+
+## M2 finding
+
+The Scrapify storefront page is dynamic, but the deterministic source data is available from its public network endpoint:
+
+```text
+https://scrapifydatalabs.com/playground/js-rendered
+        ↓ JavaScript GET
+https://scrapifydatalabs.com/data/products.json
+```
+
+M2 therefore does **not** add Playwright. The mechanism is:
+
+```text
+Dynamic storefront
+      ↓ inspect acquisition boundary
+Public JSON endpoint
+      ↓ httpx
+RawEvidence (one JSON response)
+      ↓
+Many ProductObservations
+      ↓
+Normalize / Validate
+      ↓
+Shared Product State + History
+```
+
+This also proved two M1 assumptions were too narrow:
+
+1. one `RawEvidence` can contain many product records;
+2. a stable source record ID can be a better identity than a product URL.
 
 ## Core flow
 
 ```text
 External Source
       ↓
-    Fetch
+Acquisition mechanism selected from observed source behavior
       ↓
- RawEvidence
+RawEvidence
       ↓
-Source Parser
+1..N ProductObservation
       ↓
-ProductObservation
+Normalize
       ↓
-  Normalize
-      ↓
-ProductNormalizedData
-      ↓
-   Validate
-      ↓
-ValidatedProduct
+Validate
       ↓
 State Transition
       ↓
 CurrentProductState
       ↓
- ProductHistory
+ProductHistory
       ↓
-     CLI
+CLI
 ```
 
 Core rule:
 
 > Only validated and accepted product data may change trusted persisted state.
 
-Every trusted state can be traced back through history → observation → exact raw evidence.
-
-## Why M1 changed the M0 design
-
-The second source showed that `Book*` was source/domain vocabulary, while the shared business object is a **Product**. M1 therefore generalizes only the parts proven common by two sources:
-
-```text
-shared:
-ProductObservation
-ProductNormalizedData
-ValidatedProduct
-CurrentProductState
-ProductHistory
-state transitions
-persistence
-CLI
-
-source-specific:
-HTML parser
-source host recognition
-availability text normalization
-```
-
-M1 does **not** introduce a plugin framework or generic entity model.
-
-ScrapeMe exposes multiple categories, while the M0 contract has one optional category field. M1 deliberately does not invent a primary category; that field is left unset for ScrapeMe until a real requirement justifies changing category cardinality.
-
 ## Identity
 
-For M1:
+M2 supports either:
 
 ```text
 source + canonical_product_url
 ```
 
-URL migration, fuzzy matching, and cross-source entity resolution remain out of scope.
+or:
+
+```text
+source + source_record_id
+```
+
+Internally both become a stable `identity_key`.
 
 ## Persistence
 
-Current M1 tables:
-
 ```text
 raw_evidence
-      ↓
+      ↓ 1:N
 product_observations
       ↓ accepted state decision
-   products
+products
       ↓
 product_history
 ```
 
-M1 migration `0002_m1_product_semantics` renames the M0 book-specific tables while preserving existing M0 data.
+Migration `0003_m2_multi_record_identity` preserves M0/M1 data while adding:
 
-`raw_evidence` is committed first so exact external input survives a later parser/state failure. Observation + current-state mutation + history append commit together in the trusted-state transaction.
+- `identity_key`
+- optional `source_record_id`
+- multi-record observation uniqueness
+- optional product URL for ID-identified records
+- raw currency provenance for JSON sources
 
 ## Local PostgreSQL
 
@@ -114,20 +121,19 @@ Deterministic suite:
 pytest -q
 ```
 
-Live source tests:
+M2 live acquisition tests:
 
 ```bash
-RUN_LIVE=1 pytest -q tests/integration/test_books_live.py
-RUN_LIVE=1 pytest -q tests/integration/test_scrapeme_live.py
+RUN_LIVE=1 pytest -q tests/integration/test_scrapify_js_live.py
 ```
 
-PostgreSQL tests:
+M2 live + PostgreSQL:
 
 ```bash
-RUN_POSTGRES=1 pytest -q tests/integration/test_postgres_persistence.py
+RUN_LIVE=1 RUN_POSTGRES=1 pytest -q tests/integration/test_scrapify_js_postgres_e2e.py
 ```
 
-Full live + PostgreSQL M1 integration:
+Full integration:
 
 ```bash
 RUN_LIVE=1 RUN_POSTGRES=1 pytest -q tests/integration
@@ -135,32 +141,27 @@ RUN_LIVE=1 RUN_POSTGRES=1 pytest -q tests/integration
 
 ## CLI
 
-With `DATABASE_URL` configured, the CLI auto-detects the supported source from the URL.
-
-Books to Scrape:
+Existing URL-identified products still work:
 
 ```bash
 python -m src.main scrape \
   https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html
-```
 
-ScrapeMe:
-
-```bash
 python -m src.main scrape \
   https://scrapeme.live/shop/Charizard/
 ```
 
-Read current state:
+Scrape the M2 JS storefront through its observed JSON acquisition path:
 
 ```bash
-python -m src.main show https://scrapeme.live/shop/Charizard/
+python -m src.main scrape-catalog scrapify-js
 ```
 
-Read accepted state-transition history:
+Inspect a source-ID-identified product:
 
 ```bash
-python -m src.main history https://scrapeme.live/shop/Charizard/
+python -m src.main show-record scrapify_js p-1001
+python -m src.main history-record scrapify_js p-1001
 ```
 
 ## Architecture contract

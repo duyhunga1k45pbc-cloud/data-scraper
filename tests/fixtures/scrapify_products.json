@@ -1,0 +1,12 @@
+{
+  "meta": {
+    "source": "Scrapify Playground",
+    "description": "Sample product API for scraping practice",
+    "count": 3
+  },
+  "products": [
+    {"id": "p-1001", "title": "NovaPulse Wireless Headphones", "category": "Audio", "price": 129.99, "currency": "USD", "rating": 4.6, "reviews": 214, "in_stock": true},
+    {"id": "p-1002", "title": "OrbitFit Smartwatch Pro", "category": "Wearables", "price": 199.0, "currency": "USD", "rating": 4.4, "reviews": 508, "in_stock": true},
+    {"id": "p-1003", "title": "LumenFrame Mirrorless X2", "category": "Cameras", "price": 899.5, "currency": "USD", "rating": 4.8, "reviews": 91, "in_stock": false}
+  ]
+}

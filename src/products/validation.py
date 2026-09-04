@@ -15,6 +15,7 @@ from .models import (
 SOURCE_HOSTS = {
     "books_to_scrape": "books.toscrape.com",
     "scrapeme_live": "scrapeme.live",
+    "scrapify_js": "scrapifydatalabs.com",
 }
 
 
@@ -28,6 +29,12 @@ def _canonical_url_is_valid(source: str, url: str | None) -> bool:
         and parsed.hostname == expected_host
         and bool(parsed.path)
     )
+
+
+def _identity_is_valid(data: ProductNormalizedData) -> bool:
+    if data.source_record_id:
+        return True
+    return _canonical_url_is_valid(data.source, data.canonical_product_url)
 
 
 def validate_product(data: ProductNormalizedData) -> ValidationResult:
@@ -56,7 +63,13 @@ def validate_product(data: ProductNormalizedData) -> ValidationResult:
     if data.source not in SOURCE_HOSTS:
         errors.append(ValidationErrorCode.UNKNOWN_SOURCE)
 
-    if not _canonical_url_is_valid(data.source, data.canonical_product_url):
+    if not _identity_is_valid(data):
+        errors.append(ValidationErrorCode.MISSING_IDENTITY)
+
+    if (
+        data.canonical_product_url is not None
+        and not _canonical_url_is_valid(data.source, data.canonical_product_url)
+    ):
         errors.append(ValidationErrorCode.INVALID_CANONICAL_URL)
 
     if errors:
@@ -66,11 +79,11 @@ def validate_product(data: ProductNormalizedData) -> ValidationResult:
     assert data.price is not None
     assert data.currency is not None
     assert data.availability is not None
-    assert data.canonical_product_url is not None
 
     identity = ProductIdentity(
         source=data.source,
         canonical_product_url=data.canonical_product_url,
+        source_record_id=data.source_record_id,
     )
 
     return ValidationResult(
@@ -82,7 +95,7 @@ def validate_product(data: ProductNormalizedData) -> ValidationResult:
             availability=data.availability,
             quantity=data.quantity,
             category=data.category,
-            source_url=data.canonical_product_url,
+            source_url=(data.source_url or data.canonical_product_url or ""),
             observed_at=data.observed_at,
         ),
         errors=(),

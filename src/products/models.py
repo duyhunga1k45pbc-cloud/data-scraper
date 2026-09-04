@@ -8,6 +8,7 @@ from enum import Enum
 
 class Currency(str, Enum):
     GBP = "GBP"
+    USD = "USD"
 
 
 class Availability(str, Enum):
@@ -32,6 +33,7 @@ class ValidationErrorCode(str, Enum):
     INCONSISTENT_AVAILABILITY_QUANTITY = "INCONSISTENT_AVAILABILITY_QUANTITY"
     UNKNOWN_SOURCE = "UNKNOWN_SOURCE"
     INVALID_CANONICAL_URL = "INVALID_CANONICAL_URL"
+    MISSING_IDENTITY = "MISSING_IDENTITY"
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,9 @@ class ProductObservation:
     price_raw: str | None
     availability_raw: str | None
     category_raw: str | None
+    currency_raw: str | None = None
+    source_record_id_raw: str | None = None
+    canonical_product_url_raw: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,12 +63,23 @@ class ProductNormalizedData:
     availability: Availability | None
     quantity: int | None
     category: str | None
+    source_url: str | None = None
+    source_record_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ProductIdentity:
     source: str
-    canonical_product_url: str
+    canonical_product_url: str | None = None
+    source_record_id: str | None = None
+
+    @property
+    def key(self) -> str:
+        if self.source_record_id:
+            return f"id:{self.source_record_id}"
+        if self.canonical_product_url:
+            return f"url:{self.canonical_product_url}"
+        raise ValueError("product identity requires source_record_id or canonical_product_url")
 
 
 @dataclass(frozen=True)

@@ -1,35 +1,36 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M1
+## 1. Current scope: M2
 
-M0 proved one trustworthy observation-to-state loop using Books to Scrape.
+M0 proved one static source. M1 proved a shared `Product` state contract across two HTML sources.
 
-M1 adds a second e-commerce-shaped source, ScrapeMe, to discover what actually generalizes. M1 is not a generic scraping framework.
+M2 stress-tests the acquisition boundary with a JavaScript-rendered e-commerce storefront.
 
-Supported sources:
+Current sources/mechanisms:
 
 ```text
-books.toscrape.com → books_to_scrape
-scrapeme.live      → scrapeme_live
+Books to Scrape  → static HTML → httpx + HTML parser
+ScrapeMe         → static HTML → httpx + HTML parser
+Scrapify JS      → JS storefront → observed public JSON endpoint → httpx + JSON parser
 ```
+
+M2 deliberately does not become a generic scraping framework.
 
 ## 2. Business goal
 
 > Collect external product data and maintain a reliable structured current state and history.
 
-Core business requirements:
-
 **BR-01 — Acquire**  
-Collect product data from a supported external source.
+Collect product data from a supported external source using the least-complex mechanism that can obtain the required evidence correctly.
 
 **BR-02 — Structure**  
-Extract and normalize required fields into a defined product schema.
+Extract and normalize required product fields into a defined schema.
 
 **BR-03 — Data state**  
 Explain which representation data is in, whether it was accepted, and why.
 
 **BR-04 — Current trusted state**  
-Maintain one trusted current state per source product identity. Invalid/failed data must not silently overwrite it.
+Maintain one trusted current state per source product identity.
 
 **BR-05 — History**  
 Preserve accepted trusted state transitions.
@@ -37,31 +38,63 @@ Preserve accepted trusted state transitions.
 **BR-06 — Deliver**  
 Expose current state and history as structured CLI output.
 
-## 3. Current architecture
+## 3. M2 observed acquisition behavior
+
+The M2 storefront initially returns an empty product container. JavaScript then requests a JSON dataset and injects product cards.
+
+Observed chain:
+
+```text
+GET /playground/js-rendered
+      ↓
+initial HTML contains no product cards
+      ↓ JavaScript
+GET /data/products.json
+      ↓
+product records
+```
+
+Therefore:
+
+```text
+browser rendering is possible
+but
+browser rendering is not required
+```
+
+M2 selects the deterministic public JSON endpoint directly.
+
+This is the first concrete acquisition-selection rule:
+
+```text
+If required data is absent from initial HTML:
+    inspect deterministic network evidence first
+    if sufficient public endpoint exists → acquire it directly
+    else → browser mechanism may be justified
+```
+
+Playwright remains deferred because M2 does not require it.
+
+## 4. Current architecture
 
 ```text
 External Source
       ↓
-    Fetch
+Acquisition
       ↓
-┌─────────────────┐
-│   RawEvidence   │
-│ exact response  │
-└────────┬────────┘
-         ↓ source-specific extraction
-┌────────────────────┐
-│ ProductObservation │
-└─────────┬──────────┘
-          ↓ normalization
-┌───────────────────────┐
-│ ProductNormalizedData │
-└───────────┬───────────┘
-            ↓ validation
-┌──────────────────┐
-│ ValidatedProduct │
-└────────┬─────────┘
-         ↓
-   State Transition
+RawEvidence
+      ↓
+Source Parser
+      ↓
+1..N ProductObservation
+      ↓
+ProductNormalizedData
+      ↓
+Validation
+      ↓
+ValidatedProduct
+      ↓
+State Transition
  ┌───────┼─────────────┐
  │       │             │
 CREATE NO_CHANGE     UPDATE
@@ -78,15 +111,15 @@ CREATE NO_CHANGE     UPDATE
 Validation failure:
 
 ```text
-ProductNormalizedData
-        ↓
-      REJECT
-        ↓
-current state unchanged
+NormalizedData
+    ↓
+  REJECT
+    ↓
+trusted state unchanged
 history unchanged
 ```
 
-## 4. Representation boundaries
+## 5. Representation boundaries
 
 ```text
 RawEvidence
@@ -98,9 +131,7 @@ RawEvidence
 
 ### RawEvidence
 
-Purpose:
-
-> Preserve the exact input required to verify/replay extraction.
+Exact acquired payload:
 
 ```text
 id
@@ -112,9 +143,17 @@ body
 body_hash
 ```
 
+M2 proves cardinality is:
+
+```text
+RawEvidence 1 → N ProductObservation
+```
+
+not necessarily 1 → 1.
+
 ### ProductObservation
 
-Source-shaped interpretation of evidence:
+Source-shaped interpretation:
 
 ```text
 evidence_id
@@ -125,19 +164,22 @@ observed_at
 
 title_raw
 price_raw
+currency_raw
 availability_raw
 category_raw
+source_record_id_raw
+canonical_product_url_raw
 ```
-
-Observation is not trusted business data.
 
 ### ProductNormalizedData
 
-Typed/normalized representation:
+Typed representation:
 
 ```text
 source
-canonical_product_url
+source_url
+canonical_product_url | null
+source_record_id | null
 observed_at
 title
 price
@@ -147,164 +189,116 @@ quantity
 category
 ```
 
-Normalization answers whether a representation can be converted. It does not decide whether the resulting business meaning is valid.
-
 ### ValidatedProduct
 
-The domain boundary accepted by state-transition logic.
-
-```text
-Only ValidatedProduct may enter a state-changing decision.
-```
+Only validated product data may enter state-changing logic.
 
 ### CurrentProductState
 
-The current trusted representation used by downstream consumers. It is not simply the latest scrape result.
+Current trusted business representation, not simply the latest acquired value.
 
 ### ProductHistory
 
-Contains only accepted `CREATE` and `UPDATE` transitions. Failed/rejected/no-change observations do not become trusted history entries.
+Only accepted `CREATE` and `UPDATE` transitions.
 
-## 5. M1 source boundary
+## 6. Identity
 
-The second source provided evidence for a small shared `Product` contract, but not for a plugin framework.
+M1 assumed every product had a stable product URL. M2 source records expose stable IDs (`p-1001`, etc.) in one catalog payload and do not require individual product URLs.
 
-### Shared across both sources
+The identity contract therefore becomes:
 
 ```text
-ProductObservation shape
-price/currency domain type
-availability domain type
-validation semantics
-identity rule
-state transitions
-current-state persistence
-history
-traceability
-CLI delivery
+ProductIdentity
+├── source
+├── canonical_product_url | null
+└── source_record_id | null
 ```
 
-### Still source-specific
+At least one locator must exist.
+
+Stable internal key:
 
 ```text
-HTML selectors / parser
-extractor version
-source host recognition
-availability text shape
+source_record_id present → identity_key = "id:<source_record_id>"
+otherwise               → identity_key = "url:<canonical_product_url>"
 ```
 
-Current availability examples:
+Invariant becomes:
 
 ```text
-Books to Scrape:
-"In stock (22 available)"
-→ IN_STOCK, quantity=22
-
-ScrapeMe:
-"31 in stock"
-→ IN_STOCK, quantity=31
+one (source, identity_key) → at most one current trusted state
 ```
 
-M1 handles these explicitly. No source-adapter framework is introduced yet.
+No fuzzy matching or cross-source entity resolution is introduced.
 
-## 6. M1 schema decision: category
+## 7. Normalization and validation
 
-Books to Scrape exposes one book category. ScrapeMe/WooCommerce can expose multiple categories.
+M2 adds `USD` because the source actually provides USD values.
 
-The M0 contract contains one optional `category` field. M1 does not guess which ScrapeMe category is primary, so the shared category field is left unset for that source.
-
-This is an observed schema mismatch, not a reason by itself to invent a larger category abstraction. A future business requirement may justify changing the contract to multiple categories.
-
-## 7. Validation
-
-Field rules:
+Price examples:
 
 ```text
-title
-- required
-- non-empty
+HTML source: "£51.77" → 51.77 GBP
+JSON source: 129.99 + "USD" → 129.99 USD
+```
 
-price
-- required
-- parseable Decimal
-- >= 0
+Availability examples:
 
-currency
-- recognized
+```text
+Books:      "In stock (22 available)" → IN_STOCK, 22
+ScrapeMe:   "31 in stock"              → IN_STOCK, 31
+Scrapify:   true                        → IN_STOCK, quantity unknown
+            false                       → OUT_OF_STOCK, quantity unknown
+```
 
-availability
-- recognized
+Field rules remain:
 
-quantity
-- if present, >= 0
+```text
+title       required, non-empty
+price       required, Decimal, >= 0
+currency    recognized
+availability recognized
+quantity    if present, >= 0
 ```
 
 Cross-field rule:
 
 ```text
-OUT_OF_STOCK + quantity > 0
-→ invalid
+OUT_OF_STOCK + positive quantity → invalid
 ```
 
-Identity validity:
+Identity rule:
 
 ```text
-source must be supported
-canonical URL must belong to the configured host for that source
+source supported
+AND
+(source_record_id exists OR canonical product URL is valid)
 ```
 
-Core distinction:
-
-```text
-Parseable != Valid
-```
-
-## 8. Identity
-
-M1 identity remains:
-
-```text
-source + canonical_product_url
-```
-
-This is enough for the two current sources.
-
-Deferred until observed need:
-
-```text
-URL migration
-SKU-based identity
-fuzzy identity
-cross-source entity resolution
-```
-
-## 9. State transitions
+## 8. State transitions
 
 ### CREATE
 
 ```text
-no current state
-+ ValidatedProduct
-→ create current state
-→ append initial history
+no current state + valid product
+→ current state created
+→ initial history appended
 ```
 
 ### NO_CHANGE
 
 ```text
-current state
-+ equivalent ValidatedProduct
-→ state unchanged
-→ no history entry
+equivalent valid product
+→ current state unchanged
+→ no history
 ```
 
 ### UPDATE
 
 ```text
-current state
-+ different ValidatedProduct
-→ update current state
-→ append exactly one history entry
+different valid product
+→ current state updated
+→ exactly one history entry appended
 ```
 
 ### REJECT
@@ -315,36 +309,29 @@ invalid normalized data
 → history unchanged
 ```
 
-## 10. Invariants
+## 9. Invariants
 
-**INV-01**  
-Only validated + accepted data may modify trusted state.
+**INV-01** Only validated + accepted data may modify trusted state.
 
-**INV-02**  
-Invalid/failed data must not modify current trusted state.
+**INV-02** Invalid/failed data must not modify current trusted state.
 
-**INV-03**  
-One `(source, canonical_product_url)` identity has at most one current state.
+**INV-03** One `(source, identity_key)` has at most one current state.
 
-**INV-04**  
-Persisted current state must satisfy domain validation.
+**INV-04** Persisted current state must satisfy domain validation.
 
-**INV-05**  
-Current-state update + history append form one atomic trusted-state transaction.
+**INV-05** Current-state update + history append form one atomic trusted-state transaction.
 
-**INV-06**  
-Reprocessing equivalent state must not create duplicate trusted transitions/history.
+**INV-06** Reprocessing equivalent state must not create duplicate trusted transitions/history.
 
-**INV-07**  
-History must not contain a transition trusted state never actually underwent.
+**INV-07** History must not contain a transition trusted state never actually underwent.
 
-## 11. Persistence
+**INV-08** Multiple observations derived from one evidence payload remain independently identifiable and traceable to that same evidence.
 
-M1 persistence:
+## 10. Persistence
 
 ```text
 raw_evidence
-      ↓
+      ↓ 1:N
 product_observations
       ↓ accepted
    products
@@ -352,64 +339,80 @@ product_observations
 product_history
 ```
 
-Meaning:
-
-| Table | Question answered |
-|---|---|
-| `raw_evidence` | What exact response did the source return? |
-| `product_observations` | What did the extractor/normalizer interpret from it? |
-| `products` | What does the system currently trust? |
-| `product_history` | How did trusted state actually change? |
-
-M1 migration `0002_m1_product_semantics` renames M0's book-specific tables while preserving existing data.
-
-Raw evidence commits first. If later extraction/state work fails, exact evidence remains available for divergence tracing.
-
-Observation + current-state mutation + history append are committed together in the trusted-state transaction.
-
-## 12. Divergence tracing
+Migrations:
 
 ```text
-RawEvidence
-    ↓
-ProductObservation
-    ↓
-ProductNormalizedData
-    ↓
-ValidatedProduct / validation result
-    ↓
-State Decision
-    ↓
-CurrentProductState
-    ↓
+0001 M0 persistence
+0002 M1 book → product vocabulary
+0003 M2 multi-record evidence + source-record identity
+```
+
+`0003` adds:
+
+```text
+product_observations.identity_key
+product_observations.source_record_id
+product_observations.currency_raw
+products.identity_key
+products.source_record_id
+products.canonical_product_url becomes optional
+```
+
+Observation uniqueness becomes:
+
+```text
+(evidence_id, extractor_version, identity_key)
+```
+
+This allows one exact JSON response to produce many independently traceable product observations.
+
+Raw evidence still commits first. Product observations + state mutations + history are committed in the trusted-state transaction.
+
+## 11. Divergence tracing
+
+For any persisted product:
+
+```text
 ProductHistory
+      ↑
+CurrentProductState
+      ↑
+State Decision
+      ↑
+ValidatedProduct
+      ↑
+ProductNormalizedData
+      ↑
+ProductObservation
+      ↑
+RawEvidence
 ```
 
-A wrong persisted value can therefore be traced to the first boundary where representation stopped corresponding to its input.
+For M2, many products may point to the same `RawEvidence` row, which is correct because they were all observed in the same exact JSON payload.
 
-## 13. M1 acceptance evidence
+## 12. M2 acceptance evidence
 
-Deterministic tests must prove at least:
+Deterministic tests must prove:
 
 ```text
-Books source still reaches the shared Product state contract.
-ScrapeMe source reaches the same Product state contract.
-Both sources persist into the same products/history model.
-Same state remains idempotent.
-Invalid data cannot mutate trusted state.
-State update + history append rollback together on failure.
-Unsupported source host is rejected before fetch.
+one JSON evidence → multiple observations
+JSON price/currency normalize to shared domain types
+source_record_id creates stable product identity
+one evidence can create multiple current states/history entries
+reprocessing the same batch creates no duplicate effects
+M0/M1 URL-identified products still work
 ```
 
-Live tests may additionally prove:
+Live tests additionally prove:
 
 ```text
-books.toscrape.com → shared Product state
-scrapeme.live      → shared Product state
-live source → PostgreSQL → trace back to RawEvidence
+initial JS storefront HTML has no product cards
+public JSON network endpoint returns the product dataset
+live JSON catalog → shared Product state
+live JSON catalog → PostgreSQL
 ```
 
-## 14. Current code boundaries
+## 13. Current code boundaries
 
 ```text
 src/
@@ -424,9 +427,12 @@ src/
 │   ├── source.py
 │   └── service.py
 ├── books/
-│   └── parser.py          # Books source parser + M0 compatibility wrappers
+│   └── parser.py
 ├── scrapeme/
-│   └── parser.py          # ScrapeMe source parser
+│   └── parser.py
+├── scrapify_js/
+│   ├── parser.py
+│   └── service.py
 ├── storage/
 │   ├── models.py
 │   ├── repositories.py
@@ -434,29 +440,27 @@ src/
 └── main.py
 ```
 
-`books/` compatibility wrappers remain temporarily so the M0 contracts/tests continue to prove backward behavior while M1 introduces shared Product semantics.
-
-## 15. Explicit non-goals
+## 14. Explicit non-goals
 
 Do not add without new evidence:
 
 ```text
 GenericEntity
 plugin/source-adapter framework
-fuzzy identity resolution
+fuzzy identity
 cross-source entity resolution
 variant model
 sale/original-price model
+Playwright/browser runtime
 Redis
 Celery
-Playwright
 LLM extraction
 alerts
 dashboard
 raw-evidence retention/dedup/object storage
 ```
 
-## 16. Development loop
+## 15. Development loop
 
 ```text
 Business Requirements
@@ -480,7 +484,7 @@ Observed Failure Modes
 Architecture evolves only if required
 ```
 
-## 17. Freeze rule
+## 16. Freeze rule
 
 A new mechanism is added only when at least one is true:
 
@@ -492,4 +496,4 @@ OR
 current mechanism cannot preserve an invariant
 ```
 
-M1 deliberately stops at two supported sources and one shared Product contract. A third source should be used to determine whether a real adapter abstraction is justified.
+M2's key result is that a dynamic page did **not** automatically justify a browser. The observed network API was the smaller deterministic mechanism.

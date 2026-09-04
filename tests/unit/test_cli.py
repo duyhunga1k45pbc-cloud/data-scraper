@@ -39,6 +39,7 @@ def _seed_database(database_url: str) -> None:
                 evidence_id=evidence.id,
                 extractor_version="books-to-scrape-v1",
                 source="books_to_scrape",
+                identity_key=f"url:{URL}",
                 source_url=URL,
                 observed_at=T0,
                 title_raw="A Light in the Attic",
@@ -60,6 +61,7 @@ def _seed_database(database_url: str) -> None:
 
             book = BookRow(
                 source="books_to_scrape",
+                identity_key=f"url:{URL}",
                 canonical_product_url=URL,
                 title="A Light in the Attic",
                 price=Decimal("51.77"),
