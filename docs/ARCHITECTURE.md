@@ -1,6 +1,6 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M15
+## 1. Current scope: M16
 
 M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators. M4 made history semantic rather than presentation-order sensitive.
 
@@ -850,5 +850,51 @@ AC-70 retry leaves parent unchanged and successful child carries complete accoun
 AC-71 retry of non-FAILED parent is rejected
 AC-72 second direct retry of the same parent is rejected; retry chain remains linear
 AC-73 PostgreSQL abandoned recovery + retry lineage preserves the same contract
+```
+
+## M16 — operational observability
+
+M16 is requirement-driven rather than a new trusted-state failure mode. After M14/M15, execution state is durable, but an operator still needs a stable way to answer: what ran, what failed, how long did it take, and how much *proven* work was completed without manually interpreting database rows.
+
+M16 adds two read/emit surfaces and deliberately adds no new persistence schema:
+
+```text
+ScrapeRun lifecycle
+   ├── best-effort structured JSON events
+   └── durable scrape_runs
+          ↓
+      RunMetricsSnapshot
+```
+
+Structured events are emitted only after durable run transitions commit. They contain operational identifiers/status/counters and deliberately omit RawEvidence bodies, parsed payloads, product snapshots, and error_message text. Event emission is best effort: a broken logging sink cannot change scrape execution or trusted product state.
+
+Metrics are derived from durable `scrape_runs`. Status/failure/duration counts include all matching runs, but product-work counters are summed only from `accounting_complete=true` rows. This preserves the M15 distinction between "zero proven work" and "work may have happened but final accounting is unavailable".
+
+No Prometheus server, OpenTelemetry collector, log shipper, Grafana dependency, or metrics database is added. Those are delivery/integration mechanisms and remain frozen until deployment requirements demand them.
+
+### M16 invariants
+
+**INV-36** Observability is non-authoritative: event/metrics code must not mutate or reinterpret trusted product state.
+
+**INV-37** Structured run events may expose operational metadata/counters but must not contain RawEvidence bodies, parsed payloads, product snapshots, or stored error_message text.
+
+**INV-38** Failure of a logging handler/sink must not change scrape-run outcome or raise into the execution path.
+
+**INV-39** Aggregate product-work counters include only `accounting_complete=true` runs; incomplete runs remain visible in status/failure metrics but cannot contribute unproven counters.
+
+**INV-40** Success rate uses terminal runs only (`SUCCEEDED + FAILED`); RUNNING executions are not failures and are excluded from the denominator.
+
+### M16 acceptance criteria
+
+```text
+AC-74 operational event is deterministic JSON with event name, timestamp and supplied metadata
+AC-75 broken event sink is contained and returns failure without affecting caller semantics
+AC-76 normal run emits started then finished event after durable lifecycle transitions
+AC-77 structured run events omit error_message and business/raw payload content
+AC-78 metrics report running/succeeded/failed/retry/abandoned/failure-code/duration dimensions
+AC-79 incomplete-accounting rows do not contribute product-work counter totals
+AC-80 success rate excludes RUNNING rows
+AC-81 source/scope/since filters constrain durable run metrics
+AC-82 PostgreSQL metrics preserve the same accounting boundary
 ```
 

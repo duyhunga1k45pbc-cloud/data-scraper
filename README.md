@@ -635,3 +635,24 @@ new run (retry_of_run_id=<parent>, attempt=<parent+1>)
 
 Retry is whole-run retry. M15 intentionally does not persist an acquisition cursor or resume at page/chunk N. The current M0-M13 idempotence and temporal semantics make restarting safe for trusted state; chunk-level resume is deferred until a real source makes restart cost or behavior unacceptable.
 
+## M16 finding — operational observability without new truth
+
+M16 adds structured run events and durable run metrics without changing product semantics or adding another database table.
+
+```text
+ScrapeRun
+  ├── JSON event: scrape_run_started / scrape_run_finished / scrape_run_abandoned
+  └── durable metrics snapshot from scrape_runs
+```
+
+A logging sink is best effort and cannot fail the scraper. Events contain operational metadata only; they do not log raw response bodies, product snapshots, or stored error messages. Metrics sum product-work counters only where `accounting_complete=true`.
+
+Inspect metrics directly:
+
+```bash
+python -m src.observability.cli --database-url "$DATABASE_URL" run-metrics
+python -m src.observability.cli --database-url "$DATABASE_URL" run-metrics --source scrapify_js --since-hours 24
+```
+
+M16 intentionally does not install Prometheus/OpenTelemetry/Grafana. The observability boundary is now explicit; external delivery can be added later without becoming a source of product truth.
+

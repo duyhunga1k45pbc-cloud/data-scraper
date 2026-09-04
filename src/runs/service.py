@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.catalogs.models import CatalogAcquisition, CatalogRunStatus
+from src.observability.events import emit_event
 from src.storage.models import ScrapeRunRow
 from src.storage.service import CatalogPersistenceResult, persist_catalog_acquisition_result
 
@@ -133,18 +134,10 @@ def mark_abandoned_runs_failed(
     scope_key: str | None = None,
     detected_at: datetime | None = None,
 ) -> tuple[int, ...]:
-    """Operator-declare old RUNNING rows abandoned and terminalize them.
-
-    M15 intentionally does not guess that a process is dead from elapsed time alone.
-    The caller supplies the cutoff. Only scrape_runs is changed; trusted product state,
-    RawEvidence, catalog coverage, observations, and semantic history are untouched.
-
-    Because a hard crash can happen after partial durable work but before M14 receives
-    a CatalogPersistenceResult, recovered rows keep ``accounting_complete = False``.
-    Zero counters on such a row therefore never claim that zero product work occurred.
-    """
+    """Operator-declare old RUNNING rows abandoned and emit post-commit events."""
 
     terminal_at = detected_at or _utcnow()
+    recovered: tuple[tuple[int, str, str, int, int | None], ...]
     with session_factory() as session:
         with session.begin():
             stmt = (
@@ -171,7 +164,25 @@ def mark_abandoned_runs_failed(
                     "operator marked RUNNING execution abandoned after cutoff "
                     f"{started_before.isoformat()}; counters may be incomplete"
                 )
-            return tuple(row.id for row in rows)
+            recovered = tuple(
+                (row.id, row.source, row.scope_key, row.attempt, row.retry_of_run_id)
+                for row in rows
+            )
+
+    for run_id, run_source, run_scope, attempt, retry_of_run_id in recovered:
+        emit_event(
+            "scrape_run_abandoned",
+            run_id=run_id,
+            source=run_source,
+            scope_key=run_scope,
+            status=ScrapeRunStatus.FAILED.value,
+            retry_of_run_id=retry_of_run_id,
+            attempt=attempt,
+            accounting_complete=False,
+            error_code="RUN_ABANDONED",
+        )
+    return tuple(item[0] for item in recovered)
+
 
 
 def execute_catalog_operation(
@@ -183,12 +194,7 @@ def execute_catalog_operation(
     trigger: ScrapeRunTrigger | str = ScrapeRunTrigger.MANUAL,
     retry_of_run_id: int | None = None,
 ) -> ScrapeRunResult:
-    """Run one catalog operation under durable operational lifecycle accounting.
-
-    A returned CatalogPersistenceResult gives complete M14 accounting. An exception
-    can occur after partial durable work but before that envelope exists, so exception
-    failures are terminal FAILED with ``accounting_complete = False``.
-    """
+    """Run one catalog operation under durable lifecycle + best-effort observability."""
 
     run_id, attempt = _start_run(
         session_factory,
@@ -196,6 +202,15 @@ def execute_catalog_operation(
         scope_key=scope_key,
         trigger=trigger,
         retry_of_run_id=retry_of_run_id,
+    )
+    emit_event(
+        "scrape_run_started",
+        run_id=run_id,
+        source=source,
+        scope_key=scope_key,
+        trigger_type=_trigger_value(trigger),
+        retry_of_run_id=retry_of_run_id,
+        attempt=attempt,
     )
     try:
         result = operation()
@@ -216,6 +231,25 @@ def execute_catalog_operation(
             accounting_complete=True,
             error_code=error_code,
             error_message=error_message,
+        )
+        emit_event(
+            "scrape_run_finished",
+            run_id=run_id,
+            source=source,
+            scope_key=scope_key,
+            status=status.value,
+            retry_of_run_id=retry_of_run_id,
+            attempt=attempt,
+            accounting_complete=True,
+            error_code=error_code,
+            records_seen=counters.records_seen,
+            records_created=counters.records_created,
+            records_updated=counters.records_updated,
+            records_no_change=counters.records_no_change,
+            records_stale=counters.records_stale,
+            records_rejected=counters.records_rejected,
+            records_disappeared=counters.records_disappeared,
+            records_reappeared=counters.records_reappeared,
         )
         return ScrapeRunResult(
             run_id=run_id,
@@ -241,7 +275,27 @@ def execute_catalog_operation(
             error_code=error_code,
             error_message=error_message,
         )
+        emit_event(
+            "scrape_run_finished",
+            run_id=run_id,
+            source=source,
+            scope_key=scope_key,
+            status=ScrapeRunStatus.FAILED.value,
+            retry_of_run_id=retry_of_run_id,
+            attempt=attempt,
+            accounting_complete=False,
+            error_code=error_code,
+            records_seen=0,
+            records_created=0,
+            records_updated=0,
+            records_no_change=0,
+            records_stale=0,
+            records_rejected=0,
+            records_disappeared=0,
+            records_reappeared=0,
+        )
         raise
+
 
 
 def execute_catalog_acquisition(
