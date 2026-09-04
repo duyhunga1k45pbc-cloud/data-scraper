@@ -656,3 +656,36 @@ python -m src.observability.cli --database-url "$DATABASE_URL" run-metrics --sou
 
 M16 intentionally does not install Prometheus/OpenTelemetry/Grafana. The observability boundary is now explicit; external delivery can be added later without becoming a source of product truth.
 
+## M17 — read-only delivery API and export
+
+M17 exposes the trusted current projection, semantic history, and operational runs without giving the delivery layer any write authority.
+
+Run the API:
+
+```bash
+export DATABASE_URL='postgresql+psycopg://data_scraper:data_scraper@localhost:5433/data_scraper'
+uvicorn src.delivery.api:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+Useful endpoints:
+
+```text
+GET /health
+GET /products?source=scrapify_js&limit=100&offset=0
+GET /product?source=scrapify_js&identity_key=<stable-key>
+GET /product/history?source=scrapify_js&identity_key=<stable-key>
+GET /runs?source=scrapify_js&limit=100&offset=0
+```
+
+Export the current projection:
+
+```bash
+python -m src.delivery.cli --database-url "$DATABASE_URL" \
+  export-products --format json --output products.json
+
+python -m src.delivery.cli --database-url "$DATABASE_URL" \
+  export-products --format csv --output scrapify.csv --source scrapify_js
+```
+
+Delivery uses stable `(source, identity_key)` semantics. It intentionally does not expose `products.id` as durable identity, does not expose stored run error messages, and has no mutation endpoints.
+

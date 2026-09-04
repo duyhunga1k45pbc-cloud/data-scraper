@@ -1,6 +1,6 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M16
+## 1. Current scope: M17
 
 M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators. M4 made history semantic rather than presentation-order sensitive.
 
@@ -896,5 +896,49 @@ AC-79 incomplete-accounting rows do not contribute product-work counter totals
 AC-80 success rate excludes RUNNING rows
 AC-81 source/scope/since filters constrain durable run metrics
 AC-82 PostgreSQL metrics preserve the same accounting boundary
+```
+
+## M17 — read-only delivery API and export
+
+M17 is requirement-driven. M0-M16 can acquire, prove, preserve, recover, execute, retry, and observe trusted state, but a consumer still lacks a supported boundary for reading that state. M17 turns the scraper into a usable data product without making delivery another source of truth.
+
+```text
+products -----------┐
+product_history ----┼--> read-only delivery boundary --> FastAPI JSON
+scrape_runs --------┘                              └--> JSON / CSV export
+```
+
+The delivery layer never fetches external sources, parses RawEvidence, normalizes observations, validates products, or applies transitions. Product responses are representations of `products`; history responses are representations of `product_history`; run responses remain operational metadata from `scrape_runs`.
+
+Stable semantic identity is delivered as `(source, identity_key)`. The API intentionally does not make the rebuildable `products.id` surrogate into a durable external identity. Decimal values are serialized as strings so representation does not introduce binary floating-point drift. Stored run `error_message` text is not exposed; only the bounded `error_code` is delivered.
+
+M17 adds FastAPI/uvicorn only as a delivery mechanism. It does not add authentication, caching, GraphQL, a second database, write endpoints, or background workers.
+
+### M17 invariants
+
+**INV-41** Delivery is read-only: API/export operations cannot mutate trusted product state, semantic history, acquisition provenance, or scrape-run lifecycle.
+
+**INV-42** Current-product delivery is a representation of the trusted `products` projection and must not re-fetch, re-extract, re-normalize, or re-decide state.
+
+**INV-43** Product history is addressed by stable `(source, identity_key)` and ordered from the semantic ledger; rebuildable `products.id` is not an external semantic identity.
+
+**INV-44** Delivery serialization preserves exact decimal meaning by emitting decimal values as strings.
+
+**INV-45** Operational run delivery remains separate from product truth and omits stored `error_message` text.
+
+**INV-46** Interactive API pages are bounded to at most 500 rows; explicit export is the separate unbounded batch-delivery path.
+
+### M17 acceptance criteria
+
+```text
+AC-83 GET /products returns bounded current trusted projection rows
+AC-84 GET /product resolves one product by stable source + identity_key and returns 404 when absent
+AC-85 GET /product/history returns ordered semantic-ledger entries for stable identity
+AC-86 GET /runs returns operational lifecycle rows without error_message
+AC-87 delivery API requests leave product/history/run row counts unchanged
+AC-88 Decimal fields are delivered as exact strings
+AC-89 JSON and CSV exports preserve the same stable identity and scalar product values
+AC-90 product exports can be filtered by source
+AC-91 PostgreSQL delivery proof reads durable run state without mutation
 ```
 

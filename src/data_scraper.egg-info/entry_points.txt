@@ -1,0 +1,2 @@
+[console_scripts]
+data-scraper = src.main:entrypoint

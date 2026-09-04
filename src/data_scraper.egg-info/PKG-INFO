@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: data-scraper
+Version: 0.15.0
+Requires-Python: >=3.12
+Requires-Dist: httpx<1,>=0.27
+Requires-Dist: beautifulsoup4<5,>=4.12
+Requires-Dist: lxml<7,>=5
+Requires-Dist: SQLAlchemy<3,>=2.0
+Requires-Dist: alembic<2,>=1.13
+Requires-Dist: psycopg[binary]<4,>=3.2
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn>=0.30
