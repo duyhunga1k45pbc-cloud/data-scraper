@@ -12,6 +12,7 @@ from src.storage.models import (
     BookHistoryRow,
     BookObservationRow,
     BookRow,
+    CatalogRunRow,
     RawEvidenceRow,
 )
 from src.storage.service import persist_book_url
@@ -50,7 +51,8 @@ def test_live_book_is_traceable_from_source_to_postgres_state_and_history() -> N
                 session.execute(delete(BookHistoryRow))
                 session.execute(delete(BookRow))
                 session.execute(delete(BookObservationRow))
-                session.execute(delete(RawEvidenceRow))
+                session.execute(delete(CatalogRunRow))
+            session.execute(delete(RawEvidenceRow))
 
         result = persist_book_url(session_factory, URL)
 

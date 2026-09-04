@@ -5,7 +5,13 @@ from sqlalchemy import delete, func, select
 
 from src.scrapify_js.service import persist_catalog
 from src.storage.database import create_database_engine, create_session_factory
-from src.storage.models import ProductHistoryRow, ProductObservationRow, ProductRow
+from src.storage.models import (
+    CatalogRunChunkRow,
+    CatalogRunRow,
+    ProductHistoryRow,
+    ProductObservationRow,
+    ProductRow,
+)
 
 
 @pytest.mark.live
@@ -46,6 +52,26 @@ def test_m2_live_json_catalog_reaches_shared_postgres_state_and_history() -> Non
         assert all(run.product_id is not None for run in results)
 
         with session_factory() as session:
+            catalog_run = session.scalar(
+                select(CatalogRunRow).where(
+                    CatalogRunRow.evidence_id == results[0].evidence.id,
+                    CatalogRunRow.source == "scrapify_js",
+                )
+            )
+            assert catalog_run is not None
+            assert catalog_run.status == "COMPLETE"
+            assert catalog_run.record_count == len(results)
+            coverage_chunks = list(
+                session.scalars(
+                    select(CatalogRunChunkRow)
+                    .where(CatalogRunChunkRow.catalog_run_id == catalog_run.id)
+                    .order_by(CatalogRunChunkRow.sequence)
+                )
+            )
+            assert len(coverage_chunks) == 1
+            assert coverage_chunks[0].status == "SUCCESS"
+            assert coverage_chunks[0].evidence_id == results[0].evidence.id
+            assert coverage_chunks[0].next_ref is None
             product_count = session.scalar(
                 select(func.count()).select_from(ProductRow).where(
                     ProductRow.source == "scrapify_js"

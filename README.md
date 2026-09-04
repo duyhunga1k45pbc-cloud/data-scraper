@@ -13,6 +13,50 @@ Current milestones:
 - **M3.1 — identity vs locator:** URL lookup is separated from primary product identity.
 - **M4 — semantic change history:** trusted history records meaningful product changes while ignoring source presentation-order noise.
 - **M5 — temporal correctness:** a valid observation older than the current trusted state is traced as `STALE` and cannot move state/history backward in time.
+- **M6 — concurrent update correctness:** existing-product transitions are serialized from the latest committed row.
+- **M7 — concurrent CREATE correctness:** first observations serialize by product identity before deciding CREATE.
+- **M8 — catalog completeness + disappearance semantics:** missing records change presence state only when the configured catalog scope is COMPLETE.
+- **M9 — coverage proof:** COMPLETE is derived from persisted acquisition chunks/continuation evidence instead of being asserted by the caller.
+
+
+## M9 finding
+
+M8 made disappearance conditional on a `COMPLETE` catalog run, but `COMPLETE` itself was still a caller-supplied claim. M9 moves that claim behind an acquisition proof:
+
+```text
+configured start_ref
+       ↓
+chunk 0 SUCCESS --next_ref--> chunk 1 SUCCESS
+       ↓                         ↓
+ RawEvidence                 RawEvidence
+                                 ↓
+                         next_ref = null
+                                 ↓
+                              COMPLETE
+```
+
+Any transport failure, HTTP error, parser failure, pagination cycle, traversal limit, or broken continuation chain produces `INCOMPLETE`. Direct observations from successful chunks are still processed, but missing identities cannot become `DISAPPEARED`.
+
+M9 also persists `catalog_run_chunks`, so the completeness decision is auditable. A transport failure has no HTTP response and therefore no fabricated `RawEvidence`; the failed chunk records its error directly.
+
+## M8 finding
+
+A product missing from one acquisition result is not automatically evidence that the product disappeared. M8 makes catalog completeness explicit:
+
+```text
+INCOMPLETE catalog run
+A B [C missing]
+→ C remains ACTIVE
+
+COMPLETE catalog run
+A B [C missing]
+→ C becomes DISAPPEARED
+→ one history transition with catalog-run provenance
+```
+
+If C is directly observed later, it becomes `REAPPEARED`. Repeated complete runs that still omit C refresh presence evidence but do not create duplicate disappearance history.
+
+M8 also separates business-state observation time from **presence freshness**. A newer `NO_CHANGE` observation advances `presence_observed_at`, so a delayed older catalog snapshot cannot falsely disappear a product seen more recently.
 
 ## M5 finding
 
@@ -57,7 +101,13 @@ External Source
       ↓
 Acquisition
       ↓
-RawEvidence
+Catalog Acquisition
+      ↓
+0..N RawEvidence + chunk outcomes
+      ↓
+CatalogCoverageProof
+      ↓
+CatalogRun (derived COMPLETE / INCOMPLETE)
       ↓
 1..N ProductObservation
       ↓
@@ -93,6 +143,14 @@ M6 adds:
 M7 adds:
 
 > Concurrent first observations for the same identity must serialize before CREATE, so one worker creates and the others re-evaluate against that committed state instead of failing on uniqueness.
+
+M8 adds:
+
+> Absence may change trusted presence state only when the configured catalog scope is complete.
+
+M9 strengthens it:
+
+> Completeness is a derived claim backed by persisted acquisition chunks, not a caller-supplied boolean.
 
 ## Current sources
 
@@ -143,7 +201,14 @@ Variants remain nested inside the parent product state and use a stable local ke
 
 ```text
 raw_evidence
-      ↓ 1:N
+   ↑             ↑
+catalog_run_chunks
+   ↓ N:1
+catalog_runs
+   └── derived COMPLETE absence provenance
+
+raw_evidence
+   ↓ 1:N
 product_observations
       ↓ accepted state decision
 products
@@ -151,7 +216,7 @@ products
 product_history
 ```
 
-M4 through M7 require **no schema migration**. `product_observations.state_decision` already stores the explicit `STALE` decision, while concurrency control is implemented at the PostgreSQL transaction boundary.
+M4 through M7 require **no schema migration**. M8 adds migration `0005_m8_catalog_completeness`. M9 adds `0006_m9_catalog_coverage_proof`, which persists catalog run keys/start refs and the 1:N `catalog_run_chunks` proof relation.
 
 ## Local PostgreSQL
 
@@ -212,6 +277,30 @@ pytest -q tests/integration/test_m7_postgres_concurrent_create.py
 ```
 
 M7 uses a PostgreSQL transaction-level advisory lock keyed by `(source, identity_key)` before the current-state lookup. This closes the missing-row race that `SELECT ... FOR UPDATE` cannot lock. Multi-record identities are locked in stable order.
+
+M8 catalog completeness tests:
+
+```bash
+pytest -q tests/acceptance/test_m8_catalog_completeness.py
+
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m8_postgres_catalog_completeness.py
+```
+
+The live Scrapify catalog path is marked COMPLETE only after its deterministic full-catalog JSON payload parses successfully. M8 currently models one whole-catalog scope per source; it does not yet model overlapping catalog scopes.
+
+M9 coverage-proof tests:
+
+```bash
+pytest -q \
+  tests/unit/test_m9_catalog_coverage.py \
+  tests/acceptance/test_m9_catalog_coverage_persistence.py
+
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m9_postgres_catalog_coverage.py
+```
+
+The live Scrapify full-payload path now uses the same M9 proof model as a one-chunk terminal catalog. Paginated sources use `acquire_paginated_catalog`, where continuation/terminal evidence derives completeness.
 
 Full integration suite, including live sources:
 

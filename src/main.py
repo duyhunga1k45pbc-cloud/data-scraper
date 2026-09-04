@@ -77,6 +77,7 @@ def _history_payload(rows) -> list[dict[str, Any]]:
         {
             "id": row.id,
             "observation_id": row.observation_id,
+            "catalog_run_id": row.catalog_run_id,
             "decision": row.decision,
             "previous_state": row.previous_state,
             "new_state": row.new_state,

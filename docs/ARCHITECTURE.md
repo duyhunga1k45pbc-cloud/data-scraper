@@ -1,12 +1,14 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M5
+## 1. Current scope: M9
 
 M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators. M4 made history semantic rather than presentation-order sensitive.
 
-M5 stress-tests **temporal correctness**: processing order must not be allowed to rewrite trusted state backward when an older valid observation arrives after a newer one.
+M5 established temporal correctness. M6 and M7 extended that rule across concurrent UPDATE and concurrent first-CREATE races.
 
-M5 adds no source and no persistence mechanism. It adds one explicit state decision, `STALE`, and proves that stale observations remain traceable without changing trusted state/history.
+M8 moved correctness from one entity to a catalog scope: a missing record is not evidence of disappearance without complete scope coverage.
+
+M9 closes the remaining gap: `COMPLETE` is no longer a caller-supplied assertion on the primary catalog path. It is derived from acquisition coverage evidence (ordered chunk attempts, exact RawEvidence when an HTTP response exists, continuation refs, terminal proof, and explicit failure outcomes).
 
 ## 2. Business goal
 
@@ -30,16 +32,27 @@ M5 adds no source and no persistence mechanism. It adds one explicit state decis
 
 **BR-09 Temporal correctness (M5)** — A valid observation older than the current trusted state must not overwrite that state or append trusted history.
 
+**BR-10 Catalog completeness (M8)** — Missing records may affect trusted presence state only when the configured catalog scope is explicitly known to be complete.
+
+**BR-11 Presence lifecycle (M8)** — Preserve `ACTIVE → DISAPPEARED → REAPPEARED` transitions without fabricating a product observation for absence.
+
+**BR-12 Coverage proof (M9)** — A catalog run may be classified `COMPLETE` only when acquisition evidence proves traversal from the configured start reference to an explicit terminal condition with no failed/gapped chunks.
+
 ## 3. Architecture
 
 ```text
 External Source
       ↓
-Acquisition
+Catalog Acquisition
       ↓
-RawEvidence
+CatalogChunkResult[]
+  ├── RawEvidence when a response exists
+  ├── continuation / terminal ref
+  └── explicit acquisition error when no response exists
       ↓
-Source Parser
+CatalogCoverageProof
+      ↓
+Source Parser outputs
       ↓
 1..N ProductObservation
       ↓
@@ -55,6 +68,10 @@ State Transition
 CREATE NO_CHANGE   STALE      UPDATE
  │                              │
  └──────────────┬───────────────┘
+            │
+     observed product
+            │
+   REAPPEARED when needed
             ↓
  CurrentProductState
             ↓
@@ -112,11 +129,18 @@ Only validated product data may enter state-changing logic.
 
 ### CurrentProductState
 
-Current trusted product representation.
+Current trusted product representation plus M8 presence metadata:
+
+```text
+presence_status      = ACTIVE | DISAPPEARED
+presence_observed_at = latest accepted evidence about presence/absence
+```
+
+`observed_at` remains the observation time of the trusted product-field state. `presence_observed_at` may advance on a valid `NO_CHANGE` observation without creating business history.
 
 ### ProductHistory
 
-Only accepted `CREATE`/`UPDATE` transitions. Each entry contains `previous_state` and `new_state` snapshots.
+Accepted state transitions include `CREATE`, `UPDATE`, `DISAPPEARED`, and `REAPPEARED`. Product-field transitions point to `observation_id`; an absence transition points to `catalog_run_id` because no synthetic product observation is created for absence.
 
 ## 5. M4 change semantics
 
@@ -243,6 +267,28 @@ accepted semantic difference
 → append exactly one history entry
 ```
 
+### DISAPPEARED (M8)
+
+```text
+COMPLETE catalog run
++ existing ACTIVE product absent from observed identity set
++ catalog observed_at is not older than presence_observed_at
+→ DISAPPEARED
+→ append one history entry with catalog_run_id provenance
+```
+
+An INCOMPLETE catalog run never applies this transition. Repeated complete absence refreshes `presence_observed_at` but does not duplicate history.
+
+### REAPPEARED (M8)
+
+```text
+current presence = DISAPPEARED
++ later valid direct product observation
+→ REAPPEARED
+→ ACTIVE
+→ append history linked to product observation
+```
+
 ### REJECT
 
 ```text
@@ -281,11 +327,30 @@ invalid normalized data
 
 **INV-14 (M7)** Concurrent first observations for the same `(source, identity_key)` must serialize before the CREATE decision: at most one CREATE may occur, no worker may fail merely because another worker created the identity first, and distinct observations must converge to the newest valid `observed_at`.
 
+**INV-15 (M8)** Absence of a record may not change trusted product presence unless the catalog run is explicitly `COMPLETE`.
+
+**INV-16 (M8)** `DISAPPEARED` history must be traceable to a complete catalog run and its raw evidence; it must not fabricate a product observation.
+
+**INV-17 (M8)** Older catalog absence evidence must not override newer accepted presence evidence, including a newer `NO_CHANGE` observation.
+
+**INV-18 (M9)** `COMPLETE` must be reproducible from the persisted chunk chain: traversal starts at `start_ref`, every traversed chunk succeeds, each `next_ref` equals the following `requested_ref`, and the final successful chunk has `next_ref = null`.
+
+**INV-19 (M9)** Any fetch/HTTP/parse failure, continuation gap/cycle, or configured traversal limit makes the catalog run `INCOMPLETE`; such a run cannot produce a disappearance transition.
+
+**INV-20 (M9)** Coverage provenance must not fabricate network evidence. A chunk with an HTTP response links to exact `RawEvidence`; a transport failure may persist with `evidence_id = null` plus an explicit error code.
+
 ## 11. Persistence
 
 ```text
 raw_evidence
-      ↓ 1:N
+    ↑           ↑
+catalog_run_chunks
+    ↓ N:1
+catalog_runs
+    └── derived COMPLETE absence provenance
+
+raw_evidence
+   ↓ 1:N
 product_observations
       ↓ accepted
    products
@@ -300,6 +365,8 @@ Migrations remain:
 0002 M1 book → product vocabulary
 0003 M2 multi-record evidence + source-record identity
 0004 M3 richer product semantics
+0005 M8 catalog completeness + product presence semantics
+0006 M9 catalog coverage proof + chunk provenance
 ```
 
 M4, M5, M6, and M7 add **no migration**. Existing state/history snapshots and the string `state_decision` column already support semantic comparison and the explicit `STALE` decision.
@@ -312,7 +379,7 @@ SELECT ... FOR UPDATE
 
 The row lock is acquired before converting the row to `CurrentProductState` and before computing the transition. A concurrent worker therefore waits, then evaluates its observation against the latest committed trusted row instead of against a stale snapshot.
 
-`NO_CHANGE` and `STALE` observations are persisted as observations but do not append product history.
+`NO_CHANGE` and `STALE` observations are persisted as observations but do not append product history. M8 `NO_CHANGE` may still advance `presence_observed_at` as freshness metadata.
 
 ## 12. M4 observed failure and correction
 
@@ -394,7 +461,64 @@ For multi-record evidence, all identity advisory locks are deduplicated and acqu
 
 M7 does not introduce a lock table or a new domain state, and it requires no migration.
 
-## 15. Acceptance criteria
+## 15. M8 catalog-completeness failure and correction
+
+Before M8, a multi-record source could observe `A B C` in one run and `A B` in the next, but the system had no trustworthy basis for interpreting C's absence. A partial fetch, parser omission, or incomplete pagination could look identical to a real disappearance.
+
+M8 introduces an explicit catalog-run contract:
+
+```text
+RawEvidence
+    ↓
+CatalogRun(status = COMPLETE | INCOMPLETE, source, scope_key, observed_at)
+    ↓
+observed identities
+```
+
+Only `COMPLETE` enables absence reconciliation. `INCOMPLETE` still processes records that were directly observed, but missing identities do not mutate trusted presence state.
+
+A disappeared product keeps its last trusted product fields. Only presence metadata changes. The `DISAPPEARED` history entry references `catalog_run_id`, which references the exact `RawEvidence`; no fake `ProductObservation` is manufactured.
+
+M8 also discovered that `NO_CHANGE` must still advance presence freshness. Otherwise a product seen unchanged at t10 could be falsely disappeared by a delayed complete snapshot from t5. `presence_observed_at` therefore advances independently from product-field `observed_at` and history.
+
+M8 currently supports one whole-catalog scope per source. `scope_key` is persisted as provenance, but overlapping/multiple scope membership is intentionally not modeled until a source requires it. Catalog reconciliation for the same source/scope is serialized with a PostgreSQL transaction advisory lock.
+
+## 16. M9 coverage-proof failure and correction
+
+M8 protected disappearance with a `COMPLETE` gate, but the persistence API still accepted `complete=True`. That meant a buggy adapter could fetch page 1 of 5, assert `COMPLETE`, and legitimately trigger false disappearances downstream.
+
+M9 moves completeness into the acquisition representation:
+
+```text
+start_ref = page:1
+
+page:1 SUCCESS → next_ref=page:2
+page:2 SUCCESS → next_ref=page:3
+page:3 SUCCESS → next_ref=null
+
+=> COMPLETE
+```
+
+Failure examples:
+
+```text
+page:1 SUCCESS → page:2
+page:2 transport failure          => INCOMPLETE
+
+page:1 SUCCESS → page:2
+page:2 HTTP 503                   => INCOMPLETE
+
+page:1 SUCCESS → page:2
+page:2 parse failure              => INCOMPLETE
+
+max_chunks reached with next_ref => INCOMPLETE
+```
+
+`catalog_run_chunks` persists the proof chain. `catalog_runs.evidence_id` remains as a compatibility/root anchor and is nullable for a first-page transport failure; new M9 provenance is the 1:N chunk relation.
+
+The M8 `persist_catalog_observations(..., complete=...)` function remains only as a compatibility wrapper for replaying the M8 contract. New source paths must build a `CatalogAcquisition` and use `persist_catalog_acquisition`. Scrapify's full-catalog JSON endpoint now uses a one-chunk terminal acquisition rather than asserting `complete=True`.
+
+## 17. Acceptance criteria
 
 ```text
 AC-16 product price change → one UPDATE with correct previous/new snapshots
@@ -412,9 +536,19 @@ AC-27 PostgreSQL preserves newer trusted `observed_at`, accepted observation, an
 AC-28 two concurrent observations for one existing product → newer UPDATE commits; older worker re-reads committed state and becomes STALE; no lost update or false history
 AC-29 two concurrent equivalent first observations for one identity → exactly one CREATE, one NO_CHANGE, one current product, and one CREATE history entry
 AC-30 two concurrent distinct first observations with different `observed_at` values → no worker errors, exactly one CREATE, and final current state converges to the newest valid observation
+AC-31 incomplete catalog missing an existing product → product remains ACTIVE and no disappearance history
+AC-32 complete catalog missing an existing ACTIVE product → one DISAPPEARED history entry with catalog-run provenance
+AC-33 repeated complete absence → no duplicate DISAPPEARED history; presence freshness advances
+AC-34 later direct observation of a disappeared product → REAPPEARED + ACTIVE
+AC-35 delayed older complete missing snapshot → cannot override newer presence evidence
+AC-36 contiguous successful chunk chain ending at `next_ref = null` → derived COMPLETE
+AC-37 fetch/HTTP/parse/limit/cycle/gap failure → derived INCOMPLETE
+AC-38 incomplete persisted coverage missing an existing product → product remains ACTIVE
+AC-39 complete multi-chunk proof missing an existing product → one DISAPPEARED history entry traceable through catalog_run → chunks → RawEvidence
+AC-40 first-page transport failure → INCOMPLETE run/chunk persisted with no fabricated RawEvidence
 ```
 
-## 16. Freeze rule
+## 18. Freeze rule
 
 ```text
 new mechanism only if

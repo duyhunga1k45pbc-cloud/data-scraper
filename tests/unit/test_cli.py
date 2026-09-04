@@ -72,6 +72,8 @@ def _seed_database(database_url: str) -> None:
                 source_url=URL,
                 observed_at=T0,
                 updated_at=T0,
+                presence_status="ACTIVE",
+                presence_observed_at=T0,
                 accepted_observation_id=observation.id,
             )
             session.add(book)

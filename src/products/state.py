@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from .models import (
@@ -7,6 +8,7 @@ from .models import (
     CurrentProductVariantState,
     ProductHistoryEntry,
     ProductNormalizedData,
+    ProductPresenceStatus,
     StateDecision,
     StateTransitionResult,
     ValidatedProduct,
@@ -22,6 +24,10 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _presence_time(state: CurrentProductState) -> datetime:
+    return state.presence_observed_at or state.observed_at
 
 
 def _canonical_categories(values: tuple[str, ...]) -> tuple[str, ...]:
@@ -53,10 +59,17 @@ def _canonical_variant_state(
 def _canonical_current_variants(
     variants: tuple[CurrentProductVariantState, ...],
 ) -> tuple[tuple[object, ...], ...]:
-    return tuple(sorted((_canonical_variant_state(item) for item in variants), key=lambda item: str(item[0])))
+    return tuple(
+        sorted(
+            (_canonical_variant_state(item) for item in variants),
+            key=lambda item: str(item[0]),
+        )
+    )
 
 
-def _canonical_incoming_variants(product: ValidatedProduct) -> tuple[tuple[object, ...], ...]:
+def _canonical_incoming_variants(
+    product: ValidatedProduct,
+) -> tuple[tuple[object, ...], ...]:
     values = tuple(
         (
             variant.key,
@@ -99,6 +112,8 @@ def _as_current_state(
         source_url=product.source_url,
         observed_at=product.observed_at,
         updated_at=updated_at,
+        presence_status=ProductPresenceStatus.ACTIVE,
+        presence_observed_at=product.observed_at,
     )
 
 
@@ -150,19 +165,43 @@ def transition_validated_product(
     if current.identity != incoming.identity:
         raise ValueError("incoming product identity does not match current state identity")
 
-    # Temporal correctness: an observation older than the trusted state may be
-    # preserved for audit, but it must not move current state backward in time.
-    if _as_utc(incoming.observed_at) < _as_utc(current.observed_at):
+    # M8: freshness is about the latest accepted evidence of presence/absence,
+    # not only the observation that last changed business fields. A newer
+    # NO_CHANGE observation still proves the product existed at that later time.
+    if _as_utc(incoming.observed_at) < _as_utc(_presence_time(current)):
         return StateTransitionResult(
             decision=StateDecision.STALE,
             current_state=current,
             history_entry=None,
         )
 
+    if current.presence_status == ProductPresenceStatus.DISAPPEARED:
+        new_state = _as_current_state(incoming, updated_at=changed_at)
+        history = ProductHistoryEntry(
+            identity=incoming.identity,
+            decision=StateDecision.REAPPEARED,
+            previous_state=current,
+            new_state=new_state,
+            changed_at=changed_at,
+        )
+        return StateTransitionResult(
+            decision=StateDecision.REAPPEARED,
+            current_state=new_state,
+            history_entry=history,
+        )
+
     if _same_business_state(current, incoming):
+        # No business-history entry, but advance presence freshness. This prevents
+        # a delayed older complete-catalog snapshot from falsely disappearing a
+        # product that was observed unchanged more recently.
+        refreshed = replace(
+            current,
+            presence_status=ProductPresenceStatus.ACTIVE,
+            presence_observed_at=incoming.observed_at,
+        )
         return StateTransitionResult(
             decision=StateDecision.NO_CHANGE,
-            current_state=current,
+            current_state=refreshed,
             history_entry=None,
         )
 
@@ -177,6 +216,55 @@ def transition_validated_product(
     return StateTransitionResult(
         decision=StateDecision.UPDATE,
         current_state=new_state,
+        history_entry=history,
+    )
+
+
+def transition_product_absence(
+    current: CurrentProductState,
+    *,
+    observed_at: datetime,
+    changed_at: datetime | None = None,
+) -> StateTransitionResult:
+    """Apply absence only when a complete catalog run proves scope coverage.
+
+    This function does not decide whether a catalog is complete; that belongs to
+    the catalog/acquisition boundary. It only translates a trusted complete-run
+    absence into product presence state.
+    """
+
+    changed_at = changed_at or _utc_now()
+    if _as_utc(observed_at) < _as_utc(_presence_time(current)):
+        return StateTransitionResult(
+            decision=StateDecision.STALE,
+            current_state=current,
+            history_entry=None,
+        )
+
+    if current.presence_status == ProductPresenceStatus.DISAPPEARED:
+        refreshed = replace(current, presence_observed_at=observed_at)
+        return StateTransitionResult(
+            decision=StateDecision.NO_CHANGE,
+            current_state=refreshed,
+            history_entry=None,
+        )
+
+    disappeared = replace(
+        current,
+        presence_status=ProductPresenceStatus.DISAPPEARED,
+        presence_observed_at=observed_at,
+        updated_at=changed_at,
+    )
+    history = ProductHistoryEntry(
+        identity=current.identity,
+        decision=StateDecision.DISAPPEARED,
+        previous_state=current,
+        new_state=disappeared,
+        changed_at=changed_at,
+    )
+    return StateTransitionResult(
+        decision=StateDecision.DISAPPEARED,
+        current_state=disappeared,
         history_entry=history,
     )
 

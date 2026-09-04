@@ -12,7 +12,7 @@ from src.acquisition.models import RawEvidence
 from src.books.models import StateDecision
 from src.storage import repositories
 from src.storage.database import create_database_engine, create_session_factory
-from src.storage.models import Base, BookHistoryRow, BookObservationRow, BookRow, RawEvidenceRow
+from src.storage.models import Base, BookHistoryRow, BookObservationRow, BookRow, CatalogRunRow, RawEvidenceRow
 from src.storage.service import persist_book_evidence
 
 
@@ -51,6 +51,7 @@ def test_postgres_create_then_update_preserves_state_history_contract() -> None:
             session.execute(delete(BookHistoryRow))
             session.execute(delete(BookRow))
             session.execute(delete(BookObservationRow))
+            session.execute(delete(CatalogRunRow))
             session.execute(delete(RawEvidenceRow))
 
     created = persist_book_evidence(
@@ -97,6 +98,7 @@ def test_postgres_rolls_back_state_update_if_history_append_fails(monkeypatch) -
             session.execute(delete(BookHistoryRow))
             session.execute(delete(BookRow))
             session.execute(delete(BookObservationRow))
+            session.execute(delete(CatalogRunRow))
             session.execute(delete(RawEvidenceRow))
 
     persist_book_evidence(

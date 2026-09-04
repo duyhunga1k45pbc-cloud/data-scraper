@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.acquisition.fetch import DEFAULT_TIMEOUT_SECONDS, fetch_url
 from src.acquisition.models import RawEvidence
-from src.storage.service import PersistedProductRun, persist_product_observations
+from src.catalogs.acquisition import single_payload_catalog_acquisition
+from src.storage.service import PersistedProductRun, persist_catalog_acquisition
 
 from .parser import parse_catalog
 
@@ -51,9 +52,14 @@ def persist_catalog(
         fetched_at=fetched_at,
     )
     observations = parse_catalog(evidence)
-    return persist_product_observations(
+    acquisition = single_payload_catalog_acquisition(
+        source="scrapify_js",
+        scope_key="full-catalog",
+        evidence=evidence,
+        observations=observations,
+    )
+    return persist_catalog_acquisition(
         session_factory,
-        evidence,
-        observations,
+        acquisition,
         changed_at=changed_at,
     )

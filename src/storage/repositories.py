@@ -16,6 +16,7 @@ from src.products.models import (
     CurrentProductVariantState,
     ProductHistoryEntry,
     ProductIdentity,
+    ProductPresenceStatus,
     ProductNormalizedData,
     ProductObservation,
     ProductVariantNormalizedData,
@@ -25,6 +26,8 @@ from src.products.models import (
 )
 
 from .models import (
+    CatalogRunChunkRow,
+    CatalogRunRow,
     ProductHistoryRow,
     ProductObservationRow,
     ProductRow,
@@ -111,42 +114,64 @@ def _product_identity_advisory_lock_id(source: str, identity_key: str) -> int:
     return int.from_bytes(sha256(token).digest()[:8], byteorder="big", signed=True)
 
 
-def lock_product_identities_for_transition(
+
+
+def lock_catalog_scope_for_reconciliation(
     session: Session,
-    products: Iterable[ProductNormalizedData],
+    *,
+    source: str,
+    scope_key: str,
 ) -> None:
-    """Serialize state-transition decisions per product identity on PostgreSQL.
+    """Serialize catalog reconciliation for one source scope on PostgreSQL."""
 
-    M6 row locks serialize updates only after a current product row exists. M7
-    also needs to serialize the *first* transition for an identity, where no row
-    exists yet. PostgreSQL transaction-level advisory locks provide that missing
-    identity lock without introducing a lock table.
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    lock_id = _product_identity_advisory_lock_id(
+        f"catalog:{source}",
+        f"scope:{scope_key}",
+    )
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_id)"),
+        {"lock_id": lock_id},
+    )
 
-    All keys are acquired in sorted order before any state lookup. This avoids
-    lock-order deadlocks when one evidence payload contains multiple products.
-    Non-PostgreSQL test databases keep their existing single-process behavior.
-    """
+def lock_product_identity_keys_for_transition(
+    session: Session,
+    identities: Iterable[tuple[str, str]],
+) -> None:
+    """Acquire stable PostgreSQL advisory locks for explicit product identities."""
 
     bind = session.get_bind()
     if bind.dialect.name != "postgresql":
         return
 
-    lock_ids: set[int] = set()
-    for product in products:
-        key = _identity_key(
-            canonical_product_url=product.canonical_product_url,
-            source_record_id=product.source_record_id,
-        )
-        if key is None:
-            continue
-        lock_ids.add(_product_identity_advisory_lock_id(product.source, key))
-
+    lock_ids = {
+        _product_identity_advisory_lock_id(source, identity_key)
+        for source, identity_key in identities
+    }
     for lock_id in sorted(lock_ids):
         session.execute(
             text("SELECT pg_advisory_xact_lock(:lock_id)"),
             {"lock_id": lock_id},
         )
 
+
+def lock_product_identities_for_transition(
+    session: Session,
+    products: Iterable[ProductNormalizedData],
+) -> None:
+    """Serialize transition decisions per product identity on PostgreSQL."""
+
+    identities: list[tuple[str, str]] = []
+    for product in products:
+        key = _identity_key(
+            canonical_product_url=product.canonical_product_url,
+            source_record_id=product.source_record_id,
+        )
+        if key is not None:
+            identities.append((product.source, key))
+    lock_product_identity_keys_for_transition(session, identities)
 
 def persist_raw_evidence(session: Session, evidence: RawEvidence) -> RawEvidenceRow:
     existing = session.get(RawEvidenceRow, evidence.id)
@@ -177,6 +202,117 @@ def persist_raw_evidence(session: Session, evidence: RawEvidence) -> RawEvidence
     session.add(row)
     session.flush()
     return row
+
+
+def persist_catalog_run(
+    session: Session,
+    *,
+    run_key: str,
+    evidence_id: str | None,
+    source: str,
+    scope_key: str,
+    start_ref: str,
+    observed_at: datetime,
+    status: str,
+    record_count: int,
+) -> CatalogRunRow:
+    existing = session.scalar(
+        select(CatalogRunRow).where(CatalogRunRow.run_key == run_key)
+    )
+    if existing is not None:
+        same_run = (
+            existing.evidence_id == evidence_id
+            and existing.source == source
+            and existing.scope_key == scope_key
+            and existing.start_ref == start_ref
+            and existing.status == status
+            and existing.record_count == record_count
+            and _same_datetime(existing.observed_at, observed_at)
+        )
+        if not same_run:
+            raise PersistenceConflictError(
+                "catalog run key already exists with different coverage metadata"
+            )
+        return existing
+
+    row = CatalogRunRow(
+        run_key=run_key,
+        evidence_id=evidence_id,
+        source=source,
+        scope_key=scope_key,
+        start_ref=start_ref,
+        observed_at=observed_at,
+        status=status,
+        record_count=record_count,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def persist_catalog_run_chunk(
+    session: Session,
+    *,
+    catalog_run_id: int,
+    sequence: int,
+    requested_ref: str,
+    attempted_at: datetime,
+    evidence_id: str | None,
+    status: str,
+    next_ref: str | None,
+    record_count: int,
+    error_code: str | None,
+) -> CatalogRunChunkRow:
+    existing = session.scalar(
+        select(CatalogRunChunkRow).where(
+            CatalogRunChunkRow.catalog_run_id == catalog_run_id,
+            CatalogRunChunkRow.sequence == sequence,
+        )
+    )
+    if existing is not None:
+        same_chunk = (
+            existing.requested_ref == requested_ref
+            and _same_datetime(existing.attempted_at, attempted_at)
+            and existing.evidence_id == evidence_id
+            and existing.status == status
+            and existing.next_ref == next_ref
+            and existing.record_count == record_count
+            and existing.error_code == error_code
+        )
+        if not same_chunk:
+            raise PersistenceConflictError(
+                "catalog run chunk already exists with different evidence metadata"
+            )
+        return existing
+
+    row = CatalogRunChunkRow(
+        catalog_run_id=catalog_run_id,
+        sequence=sequence,
+        requested_ref=requested_ref,
+        attempted_at=attempted_at,
+        evidence_id=evidence_id,
+        status=status,
+        next_ref=next_ref,
+        record_count=record_count,
+        error_code=error_code,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def list_product_rows_by_source(
+    session: Session,
+    *,
+    source: str,
+) -> list[ProductRow]:
+    return list(
+        session.scalars(
+            select(ProductRow)
+            .where(ProductRow.source == source)
+            .order_by(ProductRow.identity_key)
+        )
+    )
 
 
 def find_product_row(
@@ -263,6 +399,8 @@ def row_to_current_state(row: ProductRow) -> CurrentProductState:
         source_url=row.source_url,
         observed_at=row.observed_at,
         updated_at=row.updated_at,
+        presence_status=ProductPresenceStatus(row.presence_status),
+        presence_observed_at=row.presence_observed_at,
     )
 
 
@@ -352,6 +490,12 @@ def _state_snapshot(state: CurrentProductState) -> dict[str, object]:
         "source_url": state.source_url,
         "observed_at": state.observed_at.isoformat(),
         "updated_at": state.updated_at.isoformat(),
+        "presence_status": state.presence_status.value,
+        "presence_observed_at": (
+            state.presence_observed_at.isoformat()
+            if state.presence_observed_at is not None
+            else state.observed_at.isoformat()
+        ),
     }
 
 
@@ -379,6 +523,8 @@ def _create_product_row(
         source_url=state.source_url,
         observed_at=state.observed_at,
         updated_at=state.updated_at,
+        presence_status=state.presence_status.value,
+        presence_observed_at=state.presence_observed_at or state.observed_at,
         accepted_observation_id=observation_id,
     )
     session.add(row)
@@ -390,7 +536,7 @@ def _update_product_row(
     row: ProductRow,
     *,
     state: CurrentProductState,
-    observation_id: int,
+    observation_id: int | None,
 ) -> None:
     row.identity_key = state.identity.key
     row.source_record_id = state.identity.source_record_id
@@ -408,19 +554,24 @@ def _update_product_row(
     row.source_url = state.source_url
     row.observed_at = state.observed_at
     row.updated_at = state.updated_at
-    row.accepted_observation_id = observation_id
+    row.presence_status = state.presence_status.value
+    row.presence_observed_at = state.presence_observed_at or state.observed_at
+    if observation_id is not None:
+        row.accepted_observation_id = observation_id
 
 
 def _append_history(
     session: Session,
     *,
     product_id: int,
-    observation_id: int,
+    observation_id: int | None,
+    catalog_run_id: int | None,
     history: ProductHistoryEntry,
 ) -> ProductHistoryRow:
     row = ProductHistoryRow(
         product_id=product_id,
         observation_id=observation_id,
+        catalog_run_id=catalog_run_id,
         decision=history.decision.value,
         previous_state=(
             _state_snapshot(history.previous_state)
@@ -440,17 +591,26 @@ def apply_state_transition(
     *,
     existing_product: ProductRow | None = None,
     transition: StateTransitionResult,
-    observation_id: int,
+    observation_id: int | None,
+    catalog_run_id: int | None = None,
     existing_book: ProductRow | None = None,
 ) -> ProductRow | None:
     if existing_product is None:
         existing_product = existing_book
 
-    if transition.decision in {
-        StateDecision.REJECT,
-        StateDecision.STALE,
-        StateDecision.NO_CHANGE,
-    }:
+    if transition.decision in {StateDecision.REJECT, StateDecision.STALE}:
+        return existing_product
+
+    if transition.decision == StateDecision.NO_CHANGE:
+        if existing_product is not None and transition.current_state is not None:
+            # M8: equivalent observations still advance presence freshness. This
+            # metadata update is intentionally not a business-history entry.
+            existing_product.presence_status = transition.current_state.presence_status.value
+            existing_product.presence_observed_at = (
+                transition.current_state.presence_observed_at
+                or transition.current_state.observed_at
+            )
+            session.flush()
         return existing_product
 
     if transition.current_state is None or transition.history_entry is None:
@@ -459,6 +619,8 @@ def apply_state_transition(
     if transition.decision == StateDecision.CREATE:
         if existing_product is not None:
             raise ValueError("CREATE transition cannot be applied to an existing product")
+        if observation_id is None:
+            raise ValueError("CREATE transition requires product observation provenance")
         product_row = _create_product_row(
             session,
             state=transition.current_state,
@@ -468,13 +630,16 @@ def apply_state_transition(
             session,
             product_id=product_row.id,
             observation_id=observation_id,
+            catalog_run_id=None,
             history=transition.history_entry,
         )
         return product_row
 
-    if transition.decision == StateDecision.UPDATE:
+    if transition.decision in {StateDecision.UPDATE, StateDecision.REAPPEARED}:
         if existing_product is None:
-            raise ValueError("UPDATE transition requires an existing product")
+            raise ValueError(f"{transition.decision.value} requires an existing product")
+        if observation_id is None:
+            raise ValueError(f"{transition.decision.value} requires product observation provenance")
         _update_product_row(
             existing_product,
             state=transition.current_state,
@@ -485,6 +650,27 @@ def apply_state_transition(
             session,
             product_id=existing_product.id,
             observation_id=observation_id,
+            catalog_run_id=None,
+            history=transition.history_entry,
+        )
+        return existing_product
+
+    if transition.decision == StateDecision.DISAPPEARED:
+        if existing_product is None:
+            raise ValueError("DISAPPEARED transition requires an existing product")
+        if catalog_run_id is None:
+            raise ValueError("DISAPPEARED transition requires complete catalog provenance")
+        _update_product_row(
+            existing_product,
+            state=transition.current_state,
+            observation_id=None,
+        )
+        session.flush()
+        _append_history(
+            session,
+            product_id=existing_product.id,
+            observation_id=None,
+            catalog_run_id=catalog_run_id,
             history=transition.history_entry,
         )
         return existing_product

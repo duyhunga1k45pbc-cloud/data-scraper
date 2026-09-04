@@ -56,7 +56,10 @@ def test_ac02_same_valid_state_is_idempotent() -> None:
     )
 
     assert result.decision == StateDecision.NO_CHANGE
-    assert result.current_state == current
+    assert result.current_state is not None
+    assert result.current_state.price == current.price
+    assert result.current_state.observed_at == current.observed_at
+    assert result.current_state.presence_observed_at == T0 + timedelta(days=1)
     assert result.history_entry is None
 
 

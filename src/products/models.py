@@ -20,8 +20,15 @@ class StateDecision(str, Enum):
     CREATE = "CREATE"
     NO_CHANGE = "NO_CHANGE"
     UPDATE = "UPDATE"
+    DISAPPEARED = "DISAPPEARED"
+    REAPPEARED = "REAPPEARED"
     STALE = "STALE"
     REJECT = "REJECT"
+
+
+class ProductPresenceStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    DISAPPEARED = "DISAPPEARED"
 
 
 class ValidationErrorCode(str, Enum):
@@ -165,6 +172,8 @@ class CurrentProductState:
     sku: str | None = None
     categories: tuple[str, ...] = ()
     variants: tuple[CurrentProductVariantState, ...] = ()
+    presence_status: ProductPresenceStatus = ProductPresenceStatus.ACTIVE
+    presence_observed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
