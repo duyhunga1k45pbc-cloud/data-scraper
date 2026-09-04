@@ -18,7 +18,41 @@ Current milestones:
 - **M8 — catalog completeness + disappearance semantics:** missing records change presence state only when the configured catalog scope is COMPLETE.
 - **M9 — coverage proof:** COMPLETE is derived from persisted acquisition chunks/continuation evidence instead of being asserted by the caller.
 - **M10 — projection replay verification:** rebuild the trusted current projection from persisted semantic history/freshness evidence, verify provenance, and detect drift.
+- **M11 — version-addressable raw re-extraction:** retain historical extractor implementations by version and verify persisted observations by re-running the recorded runtime against RawEvidence.
 
+
+
+## M11 finding
+
+M10 identified a real boundary: storing only `extractor_version` did not make that version executable. M11 turns the version into an addressable runtime contract. Historical implementations live in versioned modules and are registered by `(source, extractor_version)`:
+
+```text
+RawEvidence
+    +
+(source, extractor_version)
+    ↓
+ExtractorRuntime registry
+    ↓
+versioned extractor implementation
+    ↓
+re-extracted ProductObservation multiset
+    ↓ compare
+persisted ProductObservation rows
+```
+
+The registry never falls back from an unknown historical version to the latest parser. A future extraction change must add a new versioned implementation and move the source's compatibility wrapper to that new version while retaining the old module for replay.
+
+M11 verifies one evidence payload once per recorded extractor version and compares the full persisted extraction surface as a multiset, so both 1:1 and 1:N evidence cardinality are covered. Raw product fields, categories, variants, source/version/timestamps, and the persisted identity/locator projection must reproduce. A changed persisted observation, missing runtime, parser failure, extra/missing re-extracted record, or RawEvidence hash mismatch makes verification diverge.
+
+M0-M10 did not persist `source_record_id_raw` and `canonical_product_url_raw` as separate raw columns; they were persisted as their normalized identity/locator projection. M11 therefore verifies that historical projection for those two fields while all other persisted extraction fields are compared directly.
+
+Run it with:
+
+```bash
+python -m src.main verify-extraction scrapify_js
+```
+
+A consistent source exits `0`; divergence exits `1`. M11 requires no schema migration.
 
 ## M10.1 replay representation fix
 
@@ -195,6 +229,10 @@ M10 adds:
 
 > The current trusted projection must be reproducible from persisted semantic decisions and freshness evidence, with every accepted transition still provably linked to intact source evidence.
 
+M11 adds:
+
+> A persisted extractor version must resolve to an explicit retained runtime, and that runtime must reproduce the persisted extraction boundary from RawEvidence.
+
 ## Current sources
 
 ```text
@@ -356,6 +394,18 @@ RUN_POSTGRES=1 \
 pytest -q tests/integration/test_m10_postgres_projection_replay.py
 ```
 
+M11 version-addressable raw re-extraction tests:
+
+```bash
+pytest -q \
+  tests/unit/test_m11_extractor_registry.py \
+  tests/acceptance/test_m11_raw_reextraction.py \
+  tests/unit/test_m11_reextraction_cli.py
+
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m11_postgres_raw_reextraction.py
+```
+
 Full integration suite, including live sources:
 
 ```bash
@@ -396,6 +446,14 @@ python -m src.main verify-replay scrapify_js
 ```
 
 Exit code `0` means `CONSISTENT`; exit code `1` means replay found projection/provenance divergence.
+
+M11 can independently verify historical extraction from RawEvidence:
+
+```bash
+python -m src.main verify-extraction scrapify_js
+```
+
+Exit code `0` means every recorded extractor runtime reproduced its persisted observations; exit code `1` means extraction provenance diverged.
 
 ## Architecture contract
 

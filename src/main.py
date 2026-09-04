@@ -19,6 +19,7 @@ from src.storage.repositories import (
     list_product_history_rows,
     row_to_current_state,
 )
+from src.storage.reextraction import verify_source_reextraction
 from src.storage.replay import replay_source_projection
 from src.storage.service import persist_product_url
 
@@ -246,6 +247,33 @@ def _command_verify_replay(args: argparse.Namespace) -> int:
     finally:
         engine.dispose()
 
+def _command_verify_extraction(args: argparse.Namespace) -> int:
+    database_url = _resolve_database_url(args.database_url)
+    engine, session_factory = _open_session_factory(database_url)
+    try:
+        with session_factory() as session:
+            report = verify_source_reextraction(session, source=args.source)
+            payload = {
+                "source": report.source,
+                "status": "CONSISTENT" if report.is_consistent else "DIVERGED",
+                "evidence_groups": report.evidence_groups,
+                "observations": report.observations,
+                "issues": [
+                    {
+                        "code": item.code,
+                        "message": item.message,
+                        "evidence_id": item.evidence_id,
+                        "extractor_version": item.extractor_version,
+                        "identity_key": item.identity_key,
+                    }
+                    for item in report.issues
+                ],
+            }
+            _print_json(payload)
+            return 0 if report.is_consistent else 1
+    finally:
+        engine.dispose()
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="data-scraper",
@@ -308,6 +336,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_replay.add_argument("source")
     verify_replay.set_defaults(handler=_command_verify_replay)
+
+    verify_extraction = subparsers.add_parser(
+        "verify-extraction",
+        help="re-run each persisted extractor version against RawEvidence and compare observations",
+    )
+    verify_extraction.add_argument("source")
+    verify_extraction.set_defaults(handler=_command_verify_extraction)
 
     return parser
 

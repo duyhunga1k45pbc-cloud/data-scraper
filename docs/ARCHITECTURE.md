@@ -549,7 +549,44 @@ During replay, history continuity is checked (allowing only `presence_observed_a
 
 This makes replay useful as a drift/corruption detector without pretending to be historical raw re-extraction. A future requirement for re-running old parsers from raw bytes would require a version-addressable extractor runtime and is outside M10.
 
-## 18. Acceptance criteria
+## 18. M11 version-addressable extraction failure and correction
+
+M10 could verify semantic history and RawEvidence integrity, but it intentionally stopped before raw-body re-extraction. The reason was concrete: an observation stored `extractor_version = "scrapify-js-json-v1"`, yet no runtime resolver guaranteed that the exact v1 implementation still existed or would be selected later. Calling the current parser would make the version string descriptive metadata rather than executable provenance.
+
+M11 introduces an extractor runtime registry keyed by both source and version:
+
+```text
+(source, extractor_version)
+        ↓
+ExtractorRuntime
+        ├── implementation address
+        └── executable extraction function
+```
+
+The implementations used by M0-M3 are moved behind explicitly versioned modules:
+
+```text
+src.extractors.books_to_scrape_v1
+src.extractors.scrapeme_live_v2
+src.extractors.scrapify_js_json_v1
+src.extractors.scraping_sandbox_json_v1
+```
+
+The source-facing parser modules remain compatibility wrappers for the current version. Future parser changes must add a new versioned module instead of mutating the old version's behavior and must keep the historical runtime registered as long as observations reference it. Unknown versions fail closed with `EXTRACTOR_RUNTIME_NOT_FOUND`; there is no latest-version fallback.
+
+Verification groups persisted observations by `(evidence_id, extractor_version)`, loads the exact RawEvidence, recomputes its body hash, resolves the recorded runtime, runs extraction once, and compares persisted versus re-extracted observation multisets. Multiset comparison is required because one RawEvidence may contain many products and record order is not the identity of the evidence-to-observation relation.
+
+M0-M10 did not store the two raw identity-input fields (`source_record_id_raw`, `canonical_product_url_raw`) separately. Historical verification therefore compares the identity/locator projection that was actually persisted for those fields. All other persisted raw extraction fields, including nested variant raw data and source order, are compared directly. No migration is required for M11.
+
+CLI:
+
+```text
+verify-extraction <source>
+```
+
+A successful report proves that the currently retained historical runtime still reproduces the persisted extraction boundary from intact RawEvidence. It is separate from M10 projection replay: M11 checks **RawEvidence → ProductObservation**, while M10 checks **persisted semantic ledger → CurrentProductState**.
+
+## 19. Acceptance criteria
 
 ```text
 AC-16 product price change → one UPDATE with correct previous/new snapshots
@@ -582,9 +619,14 @@ AC-42 current product-row drift → replay reports CURRENT_PROJECTION_MISMATCH
 AC-43 RawEvidence body tampering → replay reports RAW_EVIDENCE_HASH_MISMATCH
 AC-44 disappearance catalog proof tampering → replay re-derives coverage and rejects the provenance
 AC-45 PostgreSQL replay matches the committed projection and detects uncommitted projection drift without persisting the corruption
+AC-46 every persisted current-source extractor version resolves to an explicit versioned runtime; unknown versions fail closed
+AC-47 one-record RawEvidence re-extraction reproduces the persisted ProductObservation extraction boundary
+AC-48 one-to-many RawEvidence re-extraction reproduces the persisted observation multiset independent of record ordering
+AC-49 persisted extraction drift produces missing/extra re-extraction diagnostics rather than being accepted as equivalent
+AC-50 PostgreSQL RawEvidence re-extraction with the recorded runtime reproduces the committed observation boundary
 ```
 
-## 19. Freeze rule
+## 20. Freeze rule
 
 ```text
 new mechanism only if
