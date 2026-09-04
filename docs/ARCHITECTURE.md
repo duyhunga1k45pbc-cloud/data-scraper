@@ -1,6 +1,6 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M9
+## 1. Current scope: M10
 
 M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators. M4 made history semantic rather than presentation-order sensitive.
 
@@ -8,7 +8,9 @@ M5 established temporal correctness. M6 and M7 extended that rule across concurr
 
 M8 moved correctness from one entity to a catalog scope: a missing record is not evidence of disappearance without complete scope coverage.
 
-M9 closes the remaining gap: `COMPLETE` is no longer a caller-supplied assertion on the primary catalog path. It is derived from acquisition coverage evidence (ordered chunk attempts, exact RawEvidence when an HTTP response exists, continuation refs, terminal proof, and explicit failure outcomes).
+M9 closes the coverage-claim gap: `COMPLETE` is no longer a caller-supplied assertion on the primary catalog path. It is derived from acquisition coverage evidence (ordered chunk attempts, exact RawEvidence when an HTTP response exists, continuation refs, terminal proof, and explicit failure outcomes).
+
+M10 adds projection replay verification. The current `products` projection must be reproducible from persisted accepted semantic history plus no-history presence freshness evidence, and every replayed transition must retain valid provenance back to intact RawEvidence or an independently re-derived COMPLETE catalog proof.
 
 ## 2. Business goal
 
@@ -37,6 +39,8 @@ M9 closes the remaining gap: `COMPLETE` is no longer a caller-supplied assertion
 **BR-11 Presence lifecycle (M8)** — Preserve `ACTIVE → DISAPPEARED → REAPPEARED` transitions without fabricating a product observation for absence.
 
 **BR-12 Coverage proof (M9)** — A catalog run may be classified `COMPLETE` only when acquisition evidence proves traversal from the configured start reference to an explicit terminal condition with no failed/gapped chunks.
+
+**BR-13 Projection replay verification (M10)** — Rebuild the trusted current projection from persisted semantic decisions/freshness evidence and detect any divergence from the materialized `products` table while re-verifying accepted-transition provenance.
 
 ## 3. Architecture
 
@@ -78,6 +82,12 @@ CREATE NO_CHANGE   STALE      UPDATE
       ProductHistory
             ↓
            CLI
+
+Persisted semantic ledger
+            ↓
+     M10 replay verifier
+            ↓
+compare replayed projection ↔ products
 ```
 
 Validation failure:
@@ -339,6 +349,10 @@ invalid normalized data
 
 **INV-20 (M9)** Coverage provenance must not fabricate network evidence. A chunk with an HTTP response links to exact `RawEvidence`; a transport failure may persist with `evidence_id = null` plus an explicit error code.
 
+**INV-21 (M10)** Replaying accepted semantic history plus no-history presence freshness evidence must reproduce the materialized current product projection and `accepted_observation_id`.
+
+**INV-22 (M10)** Replay may trust an accepted transition only when its persisted provenance remains valid: direct transitions require an intact RawEvidence hash through `ProductObservation`; disappearance requires a re-derived COMPLETE catalog chunk proof with intact linked RawEvidence.
+
 ## 11. Persistence
 
 ```text
@@ -369,7 +383,7 @@ Migrations remain:
 0006 M9 catalog coverage proof + chunk provenance
 ```
 
-M4, M5, M6, and M7 add **no migration**. Existing state/history snapshots and the string `state_decision` column already support semantic comparison and the explicit `STALE` decision.
+M4, M5, M6, M7, and M10 add **no migration**. Existing state/history snapshots and the string `state_decision` column already support semantic comparison and the explicit `STALE` decision.
 
 M6 changes the PostgreSQL state-transition read for an existing product to:
 
@@ -518,7 +532,24 @@ max_chunks reached with next_ref => INCOMPLETE
 
 The M8 `persist_catalog_observations(..., complete=...)` function remains only as a compatibility wrapper for replaying the M8 contract. New source paths must build a `CatalogAcquisition` and use `persist_catalog_acquisition`. Scrapify's full-catalog JSON endpoint now uses a one-chunk terminal acquisition rather than asserting `complete=True`.
 
-## 17. Acceptance criteria
+## 17. M10 replay failure and correction
+
+The first replay question was whether RawEvidence could simply be parsed again to rebuild trusted state. The existing persistence contract does not support that claim across code evolution: `extractor_version` is recorded on observations, but the executable parser implementation itself is not immutable/version-addressable. Therefore today's parser is not guaranteed to reproduce the historical interpretation of an old body.
+
+M10 does not invent that guarantee. It defines replay at the stable semantic boundary already persisted by the system:
+
+```text
+accepted ProductHistory snapshots
++ NO_CHANGE ProductObservations that advanced presence freshness
++ repeated COMPLETE catalog absence proofs that advanced disappearance freshness
+→ expected current trusted projection
+```
+
+During replay, history continuity is checked (allowing only `presence_observed_at` to advance without a history row), the latest accepted direct observation is reconstructed, RawEvidence body hashes are recomputed, and catalog completeness is independently re-derived from persisted `catalog_run_chunks`. The resulting expected state is compared field-for-field with `products`.
+
+This makes replay useful as a drift/corruption detector without pretending to be historical raw re-extraction. A future requirement for re-running old parsers from raw bytes would require a version-addressable extractor runtime and is outside M10.
+
+## 18. Acceptance criteria
 
 ```text
 AC-16 product price change → one UPDATE with correct previous/new snapshots
@@ -546,9 +577,14 @@ AC-37 fetch/HTTP/parse/limit/cycle/gap failure → derived INCOMPLETE
 AC-38 incomplete persisted coverage missing an existing product → product remains ACTIVE
 AC-39 complete multi-chunk proof missing an existing product → one DISAPPEARED history entry traceable through catalog_run → chunks → RawEvidence
 AC-40 first-page transport failure → INCOMPLETE run/chunk persisted with no fabricated RawEvidence
+AC-41 replay of CREATE/NO_CHANGE/DISAPPEARED/repeated-absence timeline → exact current state including presence freshness
+AC-42 current product-row drift → replay reports CURRENT_PROJECTION_MISMATCH
+AC-43 RawEvidence body tampering → replay reports RAW_EVIDENCE_HASH_MISMATCH
+AC-44 disappearance catalog proof tampering → replay re-derives coverage and rejects the provenance
+AC-45 PostgreSQL replay matches the committed projection and detects uncommitted projection drift without persisting the corruption
 ```
 
-## 18. Freeze rule
+## 19. Freeze rule
 
 ```text
 new mechanism only if
@@ -556,3 +592,12 @@ new business requirement
 OR observed failure mode
 OR current mechanism cannot preserve an invariant
 ```
+
+## M10.1 — replay representation canonicalization
+
+Replay compares semantic trusted state, not storage formatting. PostgreSQL
+`NUMERIC(18, 2)` may read a price originally observed as `199.0` back as
+`199.00`, while accepted history JSON preserves `"199.0"`. M10.1 canonicalizes
+monetary decimal representations (product price, compare-at price, and variant
+price) before projection comparison. Scale-only differences therefore cannot
+produce a false replay drift signal.

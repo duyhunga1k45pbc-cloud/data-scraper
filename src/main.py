@@ -19,6 +19,7 @@ from src.storage.repositories import (
     list_product_history_rows,
     row_to_current_state,
 )
+from src.storage.replay import replay_source_projection
 from src.storage.service import persist_product_url
 
 
@@ -219,6 +220,32 @@ def _command_history_record(args: argparse.Namespace) -> int:
         engine.dispose()
 
 
+
+def _command_verify_replay(args: argparse.Namespace) -> int:
+    database_url = _resolve_database_url(args.database_url)
+    engine, session_factory = _open_session_factory(database_url)
+    try:
+        with session_factory() as session:
+            report = replay_source_projection(session, source=args.source)
+            payload = {
+                "source": report.source,
+                "status": "CONSISTENT" if report.is_consistent else "DIVERGED",
+                "products": len(report.products),
+                "issues": [
+                    {
+                        "code": item.code,
+                        "message": item.message,
+                        "identity_key": item.identity_key,
+                        "history_id": item.history_id,
+                    }
+                    for item in report.issues
+                ],
+            }
+            _print_json(payload)
+            return 0 if report.is_consistent else 1
+    finally:
+        engine.dispose()
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="data-scraper",
@@ -274,6 +301,13 @@ def build_parser() -> argparse.ArgumentParser:
     history_record.add_argument("source")
     history_record.add_argument("record_id")
     history_record.set_defaults(handler=_command_history_record)
+
+    verify_replay = subparsers.add_parser(
+        "verify-replay",
+        help="replay one source's persisted semantic ledger and compare it with current state",
+    )
+    verify_replay.add_argument("source")
+    verify_replay.set_defaults(handler=_command_verify_replay)
 
     return parser
 

@@ -17,6 +17,45 @@ Current milestones:
 - **M7 — concurrent CREATE correctness:** first observations serialize by product identity before deciding CREATE.
 - **M8 — catalog completeness + disappearance semantics:** missing records change presence state only when the configured catalog scope is COMPLETE.
 - **M9 — coverage proof:** COMPLETE is derived from persisted acquisition chunks/continuation evidence instead of being asserted by the caller.
+- **M10 — projection replay verification:** rebuild the trusted current projection from persisted semantic history/freshness evidence, verify provenance, and detect drift.
+
+
+## M10.1 replay representation fix
+
+PostgreSQL `NUMERIC(18, 2)` materializes values such as `199.0` as `199.00`, while JSON history preserves the original decimal scale. Replay now canonicalizes monetary Decimal representations before comparison, so scale-only representation differences do not become false `CURRENT_PROJECTION_MISMATCH` results. Mismatch diagnostics also name the differing projection fields.
+
+## M10 finding
+
+Raw response bytes alone are not yet a deterministic historical replay contract: the project does not persist an immutable/version-addressable extractor runtime. Re-running today's parser against yesterday's body could silently change interpretation after parser code evolves.
+
+M10 therefore replays the **persisted semantic ledger** that already records the accepted interpretation, while independently re-checking its evidence chain:
+
+```text
+ProductHistory accepted snapshots
+        +
+NO_CHANGE presence observations
+        +
+repeated COMPLETE absence proofs
+        ↓
+replayed trusted projection
+        ↓ compare
+current products table
+```
+
+For every accepted transition M10 also verifies provenance:
+
+```text
+CREATE / UPDATE / REAPPEARED
+→ ProductObservation
+→ RawEvidence body hash
+
+DISAPPEARED
+→ CatalogRun
+→ re-derived COMPLETE chunk chain
+→ RawEvidence body hashes
+```
+
+This catches projection drift, broken history continuity, tampered raw evidence, and disappearance history whose persisted chunk chain no longer proves completeness. M10 deliberately does **not** claim raw-body re-extraction across parser versions; that would require a future version-addressable extractor mechanism.
 
 
 ## M9 finding
@@ -151,6 +190,10 @@ M8 adds:
 M9 strengthens it:
 
 > Completeness is a derived claim backed by persisted acquisition chunks, not a caller-supplied boolean.
+
+M10 adds:
+
+> The current trusted projection must be reproducible from persisted semantic decisions and freshness evidence, with every accepted transition still provably linked to intact source evidence.
 
 ## Current sources
 
@@ -302,6 +345,17 @@ pytest -q tests/integration/test_m9_postgres_catalog_coverage.py
 
 The live Scrapify full-payload path now uses the same M9 proof model as a one-chunk terminal catalog. Paginated sources use `acquire_paginated_catalog`, where continuation/terminal evidence derives completeness.
 
+M10 replay verification tests:
+
+```bash
+pytest -q \
+  tests/acceptance/test_m10_projection_replay.py \
+  tests/unit/test_m10_replay_cli.py
+
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m10_postgres_projection_replay.py
+```
+
 Full integration suite, including live sources:
 
 ```bash
@@ -334,6 +388,14 @@ python -m src.main scrape-catalog scrapify-js
 python -m src.main show-record scrapify_js p-1001
 python -m src.main history-record scrapify_js p-1001
 ```
+
+M10 can independently replay and verify one source projection:
+
+```bash
+python -m src.main verify-replay scrapify_js
+```
+
+Exit code `0` means `CONSISTENT`; exit code `1` means replay found projection/provenance divergence.
 
 ## Architecture contract
 
