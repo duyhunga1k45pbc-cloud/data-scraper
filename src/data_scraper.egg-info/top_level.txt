@@ -1,6 +1,7 @@
 __init__
 acquisition
 books
+browser_acquisition
 catalogs
 delivery
 extractors

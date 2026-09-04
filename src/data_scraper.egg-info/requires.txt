@@ -6,3 +6,4 @@ alembic<2,>=1.13
 psycopg[binary]<4,>=3.2
 fastapi>=0.115
 uvicorn>=0.30
+playwright>=1.52

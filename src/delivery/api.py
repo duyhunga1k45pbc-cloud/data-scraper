@@ -34,7 +34,7 @@ def create_app(
         engine = create_engine(resolved_url, future=True)
         session_factory = sessionmaker(bind=engine, expire_on_commit=False)
 
-    app = FastAPI(title="data-scraper delivery API", version="0.15.0")
+    app = FastAPI(title="data-scraper delivery API", version="0.16.0")
     app.state.session_factory = session_factory
     app.state.delivery_engine = engine
 

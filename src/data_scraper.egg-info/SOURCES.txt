@@ -12,6 +12,12 @@ src/books/parser.py
 src/books/service.py
 src/books/state.py
 src/books/validation.py
+src/browser_acquisition/__init__.py
+src/browser_acquisition/catalog.py
+src/browser_acquisition/cli.py
+src/browser_acquisition/models.py
+src/browser_acquisition/playwright_driver.py
+src/browser_acquisition/probe.py
 src/catalogs/__init__.py
 src/catalogs/acquisition.py
 src/catalogs/models.py

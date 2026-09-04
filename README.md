@@ -689,3 +689,61 @@ python -m src.delivery.cli --database-url "$DATABASE_URL" \
 
 Delivery uses stable `(source, identity_key)` semantics. It intentionally does not expose `products.id` as durable identity, does not expose stored run error messages, and has no mutation endpoints.
 
+## M18 — Playwright browser acquisition stress
+
+M18 introduces Playwright only at the acquisition boundary. It is justified by
+JavaScript-rendered content that plain response HTML cannot observe. Browser
+pages are converted into the same M9 `CatalogAcquisition` chunk proof used by
+HTTP sources; the browser does not normalize, validate, or mutate product state.
+
+Install the Python package and Chromium runtime:
+
+```bash
+pip install -e .
+python -m playwright install chromium
+```
+
+Run the deterministic non-browser contract first:
+
+```bash
+pytest -q
+```
+
+Run a local JavaScript-rendering proof:
+
+```bash
+RUN_BROWSER=1 pytest -q tests/integration/test_m18_playwright_local_js.py
+```
+
+Run the opt-in live proof against `web-scraping.dev`, a scraping practice site
+that explicitly provides JS-only discovery scenarios for learning/testing:
+
+```bash
+RUN_BROWSER=1 RUN_LIVE=1 \
+pytest -q tests/integration/test_m18_live_web_scraping_dev.py
+```
+
+Or inspect it manually:
+
+```bash
+python -m src.browser_acquisition.cli probe-js-links
+```
+
+The M18 stress contract is:
+
+```text
+page 1 rendered + parsed successfully
+page 2 rendered + parsed successfully
+page 3 browser timeout
+        ↓
+CatalogAcquisition = INCOMPLETE
+        ↓
+page 1/2 evidence + observations remain usable
+        ↓
+missing catalog identities are NOT proven absent
+```
+
+M18 does not add proxy rotation, CAPTCHA bypass, anti-bot evasion, Redis, Celery,
+or chunk-level resume. Browser automation must respect site terms, robots rules,
+and access restrictions.
+

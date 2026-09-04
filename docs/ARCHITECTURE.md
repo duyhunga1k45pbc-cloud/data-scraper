@@ -1,6 +1,6 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M17
+## 1. Current scope: M18
 
 M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators. M4 made history semantic rather than presentation-order sensitive.
 
@@ -940,5 +940,89 @@ AC-88 Decimal fields are delivered as exact strings
 AC-89 JSON and CSV exports preserve the same stable identity and scalar product values
 AC-90 product exports can be filtered by source
 AC-91 PostgreSQL delivery proof reads durable run state without mutation
+```
+
+## M18 — browser acquisition under JavaScript and partial failure
+
+M18 is a reality stress of the acquisition boundary. Earlier milestones already
+proved the semantic pipeline, coverage proof, operational lifecycle, recovery,
+and delivery layers, but browser-rendered sources introduce a new acquisition
+mechanism: required content may not exist in the initial HTTP body.
+
+Playwright is therefore added only where the source requires browser execution:
+
+```text
+External source
+    ↓
+Playwright Chromium
+    ↓ JavaScript / browser actions
+Rendered DOM snapshot
+    ↓
+RawEvidence
+    ↓
+source parser
+    ↓
+CatalogChunkResult
+    ↓
+existing CatalogAcquisition coverage proof
+```
+
+For browser sources, `RawEvidence.body` is the exact rendered DOM snapshot handed
+to the parser. It must not be described as the original network-response bytes.
+The requested traversal reference remains in the catalog chunk; the evidence
+`source_url` records the final browser URL after navigation/redirects.
+
+M18 deliberately reuses M9 completeness semantics instead of inventing a browser
+specific `complete=True` flag:
+
+```text
+browser page 1 SUCCESS → page 2
+browser page 2 SUCCESS → page 3
+browser page 3 timeout
+=> INCOMPLETE
+```
+
+Successful earlier browser chunks retain their evidence and observations. A
+transport failure without a captured representation has no fabricated
+`RawEvidence`; an HTTP response such as 429 keeps its received evidence but still
+makes coverage INCOMPLETE. A parser failure keeps the rendered evidence. Cycles
+and max-chunk exhaustion are explicit terminal failure chunks.
+
+The live proof uses `https://web-scraping.dev/js-links`, a purpose-built scraping
+practice fixture, rather than introducing anti-bot bypass techniques. M18 does
+not fetch robots-disallowed fixtures and does not attempt authentication/CAPTCHA
+or access-control bypass.
+
+### M18 invariants
+
+**INV-47** Browser automation is an acquisition mechanism only; it cannot bypass
+normalization, validation, state-transition, history, or projection semantics.
+
+**INV-48** A successful browser chunk must preserve the exact rendered DOM
+snapshot consumed by its parser as `RawEvidence`; a transport failure with no
+captured representation must not fabricate evidence.
+
+**INV-49** Browser traversal is COMPLETE only when the existing M9 chunk chain
+proves an unbroken path from `start_ref` to an explicit terminal `next_ref = null`.
+Timeouts, HTTP errors, parse failures, cycles, and traversal limits are INCOMPLETE.
+
+**INV-50** Partial browser acquisition may preserve/process directly observed
+records, but it does not prove absence for unseen catalog identities.
+
+**INV-51** Browser-specific timing/actions/rendering stay outside product-domain
+state logic and do not create a second source of trusted business truth.
+
+### M18 acceptance criteria
+
+```text
+AC-92 two successful browser chunks ending at null → derived COMPLETE
+AC-93 page 1 success then browser transport failure → INCOMPLETE; no fake failure evidence
+AC-94 browser HTTP 429 → received evidence preserved + INCOMPLETE
+AC-95 parser failure after render → rendered evidence preserved + INCOMPLETE
+AC-96 browser traversal cycle → explicit CYCLE_DETECTED + INCOMPLETE
+AC-97 max browser chunks with continuation remaining → explicit LIMIT_REACHED + INCOMPLETE
+AC-98 two successful pages then page-3 timeout → earlier observations survive, absence remains unproven
+AC-99 local Playwright fixture proves post-JavaScript DOM can contain links absent from initial HTML
+AC-100 opt-in live web-scraping.dev JS-only fixture proves the mechanism against a safe external source
 ```
 
