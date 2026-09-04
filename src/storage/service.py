@@ -21,6 +21,7 @@ from src.products.state import process_normalized_product
 from .repositories import (
     apply_state_transition,
     find_product_row,
+    lock_product_identities_for_transition,
     persist_product_observation,
     persist_raw_evidence,
     row_to_current_state,
@@ -50,11 +51,22 @@ def _persist_observations_transaction(
     changed_at: datetime | None,
 ) -> tuple[PersistedProductRun, ...]:
     results: list[PersistedProductRun] = []
+    prepared = tuple(
+        (observation, normalize_observation(observation))
+        for observation in observations
+    )
 
     with session_factory() as session:
         with session.begin():
-            for observation in observations:
-                normalized = normalize_observation(observation)
+            # M7: serialize by identity *before* reading current state. Unlike
+            # SELECT FOR UPDATE, this also works when the product row does not
+            # exist yet. All identity locks are acquired in stable order.
+            lock_product_identities_for_transition(
+                session,
+                (normalized for _, normalized in prepared),
+            )
+
+            for observation, normalized in prepared:
                 existing_product = find_product_row(
                     session,
                     source=normalized.source,

@@ -86,6 +86,14 @@ M5 adds:
 
 > An older valid observation may be retained as evidence/observation, but it must not overwrite a newer trusted state.
 
+M6 adds:
+
+> Concurrent transitions for an existing product must be decided from the latest committed state.
+
+M7 adds:
+
+> Concurrent first observations for the same identity must serialize before CREATE, so one worker creates and the others re-evaluate against that committed state instead of failing on uniqueness.
+
 ## Current sources
 
 ```text
@@ -143,7 +151,7 @@ products
 product_history
 ```
 
-M4 and M5 require **no schema migration**. `product_observations.state_decision` already stores the explicit `STALE` decision, while current state/history remain unchanged.
+M4 through M7 require **no schema migration**. `product_observations.state_decision` already stores the explicit `STALE` decision, while concurrency control is implemented at the PostgreSQL transaction boundary.
 
 ## Local PostgreSQL
 
@@ -195,6 +203,15 @@ pytest -q tests/integration/test_m6_postgres_concurrent_state.py
 ```
 
 M6 protects an existing product from a stale concurrent worker overwriting a newer commit by locking the current row before the transition decision is computed.
+
+M7 concurrent-first-observation correctness (PostgreSQL identity-lock proof):
+
+```bash
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m7_postgres_concurrent_create.py
+```
+
+M7 uses a PostgreSQL transaction-level advisory lock keyed by `(source, identity_key)` before the current-state lookup. This closes the missing-row race that `SELECT ... FOR UPDATE` cannot lock. Multi-record identities are locked in stable order.
 
 Full integration suite, including live sources:
 

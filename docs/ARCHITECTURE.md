@@ -279,6 +279,8 @@ invalid normalized data
 
 **INV-13 (M6)** Concurrent transitions for an existing current-state row must be decided from the latest committed trusted state; an older concurrent observation must not overwrite a newer committed state.
 
+**INV-14 (M7)** Concurrent first observations for the same `(source, identity_key)` must serialize before the CREATE decision: at most one CREATE may occur, no worker may fail merely because another worker created the identity first, and distinct observations must converge to the newest valid `observed_at`.
+
 ## 11. Persistence
 
 ```text
@@ -300,7 +302,7 @@ Migrations remain:
 0004 M3 richer product semantics
 ```
 
-M4, M5, and M6 add **no migration**. Existing state/history snapshots and the string `state_decision` column already support semantic comparison and the explicit `STALE` decision.
+M4, M5, M6, and M7 add **no migration**. Existing state/history snapshots and the string `state_decision` column already support semantic comparison and the explicit `STALE` decision.
 
 M6 changes the PostgreSQL state-transition read for an existing product to:
 
@@ -359,7 +361,40 @@ worker B: lock acquired → reads t5 → incoming t3 becomes STALE
 
 The lock is a persistence mechanism, not a new domain state. `STALE` remains the domain decision produced by the existing M5 temporal rule. Read-only CLI lookups do not acquire the lock.
 
-## 13. Acceptance criteria
+## 14. M7 concurrent-create failure and correction
+
+M6 row locking only works when the product row already exists. A first observation has no row to lock:
+
+```text
+worker A lookup X → not found
+worker B lookup X → not found
+
+A computes CREATE
+B computes CREATE
+
+A INSERT products(X) → commit
+B INSERT products(X) → unique-constraint failure
+```
+
+The unique constraint protects `INV-03`, but surfacing a database error is not the required state behavior and the losing observation would roll back instead of remaining traceable.
+
+M7 adds a PostgreSQL **transaction-level advisory lock per product identity**, acquired before the current-state lookup:
+
+```text
+lock(source, identity_key)
+        ↓
+lookup current state
+        ↓
+CREATE / NO_CHANGE / UPDATE / STALE / REJECT
+```
+
+The identity lock exists even when no `products` row exists yet. After the first worker commits, the waiting worker acquires the same lock, re-reads current state, and produces a normal domain decision instead of a unique-constraint error.
+
+For multi-record evidence, all identity advisory locks are deduplicated and acquired in stable sorted order before processing any record. This prevents opposite record order from creating advisory-lock deadlocks. Existing-product `SELECT ... FOR UPDATE` remains in place as the M6 row-level protection.
+
+M7 does not introduce a lock table or a new domain state, and it requires no migration.
+
+## 15. Acceptance criteria
 
 ```text
 AC-16 product price change → one UPDATE with correct previous/new snapshots
@@ -375,9 +410,11 @@ AC-25 older equivalent observation → STALE, not NO_CHANGE
 AC-26 stale observation remains persisted/traceable with `state_decision = STALE`
 AC-27 PostgreSQL preserves newer trusted `observed_at`, accepted observation, and history after a stale arrival
 AC-28 two concurrent observations for one existing product → newer UPDATE commits; older worker re-reads committed state and becomes STALE; no lost update or false history
+AC-29 two concurrent equivalent first observations for one identity → exactly one CREATE, one NO_CHANGE, one current product, and one CREATE history entry
+AC-30 two concurrent distinct first observations with different `observed_at` values → no worker errors, exactly one CREATE, and final current state converges to the newest valid observation
 ```
 
-## 14. Freeze rule
+## 16. Freeze rule
 
 ```text
 new mechanism only if

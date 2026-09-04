@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from hashlib import sha256
+from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from src.acquisition.models import RawEvidence
@@ -96,6 +98,54 @@ def _variant_state_from_payload(payload: dict) -> CurrentProductVariantState:
         price=Decimal(str(payload["price"])),
         availability=Availability(str(payload["availability"])),
     )
+
+
+def _product_identity_advisory_lock_id(source: str, identity_key: str) -> int:
+    """Return a stable signed 64-bit PostgreSQL advisory-lock key.
+
+    Hash collisions only over-serialize unrelated identities; they cannot allow
+    two workers for the same identity to proceed concurrently.
+    """
+
+    token = f"{source}\x1f{identity_key}".encode("utf-8")
+    return int.from_bytes(sha256(token).digest()[:8], byteorder="big", signed=True)
+
+
+def lock_product_identities_for_transition(
+    session: Session,
+    products: Iterable[ProductNormalizedData],
+) -> None:
+    """Serialize state-transition decisions per product identity on PostgreSQL.
+
+    M6 row locks serialize updates only after a current product row exists. M7
+    also needs to serialize the *first* transition for an identity, where no row
+    exists yet. PostgreSQL transaction-level advisory locks provide that missing
+    identity lock without introducing a lock table.
+
+    All keys are acquired in sorted order before any state lookup. This avoids
+    lock-order deadlocks when one evidence payload contains multiple products.
+    Non-PostgreSQL test databases keep their existing single-process behavior.
+    """
+
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+
+    lock_ids: set[int] = set()
+    for product in products:
+        key = _identity_key(
+            canonical_product_url=product.canonical_product_url,
+            source_record_id=product.source_record_id,
+        )
+        if key is None:
+            continue
+        lock_ids.add(_product_identity_advisory_lock_id(product.source, key))
+
+    for lock_id in sorted(lock_ids):
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": lock_id},
+        )
 
 
 def persist_raw_evidence(session: Session, evidence: RawEvidence) -> RawEvidenceRow:
