@@ -51,5 +51,8 @@ class ScrapeRunResult:
     status: ScrapeRunStatus
     counters: RunCounters
     catalog_result: CatalogPersistenceResult | None
+    retry_of_run_id: int | None = None
+    attempt: int = 1
+    accounting_complete: bool = True
     error_code: str | None = None
     error_message: str | None = None

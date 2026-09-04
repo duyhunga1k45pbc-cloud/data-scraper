@@ -619,3 +619,19 @@ A COMPLETE acquisition can finish SUCCEEDED. An INCOMPLETE acquisition is record
 
 M14 does not embed a scheduler framework. Cron/systemd may trigger the same run service with `trigger_type=SCHEDULED`; scheduling never becomes source of truth.
 
+## M15 finding — abandoned execution recovery and retry
+
+M14 exposed an operational state that normal exception handling cannot close: `RUNNING` survives if the process is terminated before its finalizer executes. M15 adds an explicit operator recovery step and retry lineage without changing product truth.
+
+```text
+old RUNNING
+  ↓ operator cutoff
+FAILED (RUN_ABANDONED, accounting_complete=false)
+  ↓ retry
+new run (retry_of_run_id=<parent>, attempt=<parent+1>)
+```
+
+`accounting_complete` is important: a hard crash or raised operation may have partial durable effects before a complete `CatalogPersistenceResult` exists. Such a run must not report zero counters as proof that zero work occurred. Normal COMPLETE/INCOMPLETE finalization has complete accounting; crash/exception recovery does not.
+
+Retry is whole-run retry. M15 intentionally does not persist an acquisition cursor or resume at page/chunk N. The current M0-M13 idempotence and temporal semantics make restarting safe for trusted state; chunk-level resume is deferred until a real source makes restart cost or behavior unacceptable.
+

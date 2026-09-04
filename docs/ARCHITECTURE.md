@@ -1,6 +1,6 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M14
+## 1. Current scope: M15
 
 M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators. M4 made history semantic rather than presentation-order sensitive.
 
@@ -793,5 +793,62 @@ AC-62 DISAPPEARED counting comes from explicit absence transition results, not D
 AC-63 INCOMPLETE catalog -> FAILED operational run while partial trusted processing remains governed by M8/M9
 AC-64 raised execution error -> FAILED with explicit error metadata and the error is re-raised
 AC-65 MANUAL and SCHEDULED triggers use the same correctness pipeline; trigger type has no authority over trusted state
+```
+
+## M15 — abandoned-run recovery and retry lineage
+
+M14 made execution durable, which exposed the first operational failure mode: a hard process crash can occur after `ScrapeRun(RUNNING)` is committed but before normal finalization. The exception handler cannot run after `kill -9`, host loss, or process termination, so the run can remain RUNNING forever.
+
+M15 closes only that demonstrated boundary and adds whole-run retry lineage:
+
+```text
+RUNNING persisted
+      ↓
+hard process loss
+      ↓
+no finalizer executes
+      ↓
+stale RUNNING row
+      ↓
+operator supplies explicit cutoff
+      ↓
+FAILED / RUN_ABANDONED / accounting_complete=false
+      ↓
+optional retry
+      ↓
+new ScrapeRun(retry_of_run_id=parent, attempt=N+1)
+```
+
+The cutoff is explicit. M15 does not infer liveness from elapsed time alone and does not add heartbeat threads, Redis leases, Celery, or a scheduler framework. Recovery mutates only operational `scrape_runs`; product truth remains governed by M0-M13.
+
+M15 also distinguishes a finalized failure with known counters from a crash/exception where accounting may be incomplete. `accounting_complete=false` prevents a recovered row with zero counters from falsely asserting that zero product work occurred. Existing terminal M14 rows are backfilled to `accounting_complete=true` during migration.
+
+Retry is a new execution, never a mutation of the parent run. A retry may target only FAILED, has the same source/scope, stores `retry_of_run_id`, and increments `attempt`. At most one direct retry child is allowed per run, producing a linear retry chain. A caller that needs another attempt retries the latest failed child.
+
+M15 deliberately restarts acquisition from the beginning. It does not claim chunk-level resumability. Existing M0-M13 idempotence/temporal rules protect trusted state when equivalent observations are reprocessed. Durable acquisition cursor/resume semantics remain frozen until a real source demonstrates that full restart is insufficient.
+
+### M15 invariants
+
+**INV-31** Operator recovery may terminalize only RUNNING rows older than the explicit cutoff; newer or already terminal runs remain unchanged.
+
+**INV-32** Abandoned-run recovery changes only operational run metadata and must not fabricate, rollback, or reinterpret trusted product state.
+
+**INV-33** A run whose final counters cannot be proven after crash/exception must have `accounting_complete = false`; zero counters must not imply zero durable work.
+
+**INV-34** Retry creates a new immutable run linked to one FAILED parent with identical source/scope and `attempt = parent.attempt + 1`; the parent is never rewritten.
+
+**INV-35** A SUCCEEDED/RUNNING run cannot be retried through the retry API, and one run may have at most one direct retry child.
+
+### M15 acceptance criteria
+
+```text
+AC-66 old RUNNING + explicit cutoff -> FAILED/RUN_ABANDONED/accounting_complete=false
+AC-67 newer RUNNING and terminal runs are not changed by abandoned-run recovery
+AC-68 exception-finalized run -> FAILED with accounting_complete=false
+AC-69 FAILED retry -> new child run, same source/scope, retry link, attempt increment
+AC-70 retry leaves parent unchanged and successful child carries complete accounting
+AC-71 retry of non-FAILED parent is rejected
+AC-72 second direct retry of the same parent is rejected; retry chain remains linear
+AC-73 PostgreSQL abandoned recovery + retry lineage preserves the same contract
 ```
 

@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     JSON,
     CheckConstraint,
     DateTime,
@@ -230,9 +231,24 @@ class ScrapeRunRow(Base):
             "trigger_type IN ('MANUAL', 'SCHEDULED')",
             name="ck_scrape_runs_trigger_type",
         ),
+        CheckConstraint(
+            "attempt >= 1",
+            name="ck_scrape_runs_attempt",
+        ),
+        UniqueConstraint(
+            "retry_of_run_id",
+            name="uq_scrape_runs_retry_of_run_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    retry_of_run_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("scrape_runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    accounting_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     scope_key: Mapped[str] = mapped_column(String(255), nullable=False)
     trigger_type: Mapped[str] = mapped_column(String(32), nullable=False)

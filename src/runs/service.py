@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.catalogs.models import CatalogAcquisition, CatalogRunStatus
@@ -28,9 +29,38 @@ def _start_run(
     source: str,
     scope_key: str,
     trigger: ScrapeRunTrigger | str,
-) -> int:
+    retry_of_run_id: int | None = None,
+) -> tuple[int, int]:
     with session_factory() as session:
         with session.begin():
+            attempt = 1
+            if retry_of_run_id is not None:
+                parent = session.scalar(
+                    select(ScrapeRunRow)
+                    .where(ScrapeRunRow.id == retry_of_run_id)
+                    .with_for_update()
+                )
+                if parent is None:
+                    raise ValueError(f"retry parent scrape run {retry_of_run_id} does not exist")
+                if parent.status != ScrapeRunStatus.FAILED.value:
+                    raise ValueError(
+                        f"scrape run {retry_of_run_id} is {parent.status}; only FAILED runs may be retried"
+                    )
+                if parent.source != source or parent.scope_key != scope_key:
+                    raise ValueError(
+                        "retry source/scope must match the failed parent run"
+                    )
+                existing_retry = session.scalar(
+                    select(ScrapeRunRow.id).where(
+                        ScrapeRunRow.retry_of_run_id == retry_of_run_id
+                    )
+                )
+                if existing_retry is not None:
+                    raise ValueError(
+                        f"scrape run {retry_of_run_id} already has retry run {existing_retry}"
+                    )
+                attempt = parent.attempt + 1
+
             row = ScrapeRunRow(
                 source=source,
                 scope_key=scope_key,
@@ -38,6 +68,9 @@ def _start_run(
                 started_at=_utcnow(),
                 finished_at=None,
                 status=ScrapeRunStatus.RUNNING.value,
+                retry_of_run_id=retry_of_run_id,
+                attempt=attempt,
+                accounting_complete=False,
                 records_seen=0,
                 records_created=0,
                 records_updated=0,
@@ -51,7 +84,7 @@ def _start_run(
             )
             session.add(row)
             session.flush()
-            return row.id
+            return row.id, attempt
 
 
 def _finish_run(
@@ -60,12 +93,17 @@ def _finish_run(
     run_id: int,
     status: ScrapeRunStatus,
     counters: RunCounters,
+    accounting_complete: bool,
     error_code: str | None = None,
     error_message: str | None = None,
 ) -> None:
     with session_factory() as session:
         with session.begin():
-            row = session.get(ScrapeRunRow, run_id)
+            row = session.scalar(
+                select(ScrapeRunRow)
+                .where(ScrapeRunRow.id == run_id)
+                .with_for_update()
+            )
             if row is None:
                 raise RuntimeError(f"scrape run {run_id} disappeared before finalization")
             if row.status != ScrapeRunStatus.RUNNING.value:
@@ -74,6 +112,7 @@ def _finish_run(
                 )
             row.finished_at = _utcnow()
             row.status = status.value
+            row.accounting_complete = accounting_complete
             row.records_seen = counters.records_seen
             row.records_created = counters.records_created
             row.records_updated = counters.records_updated
@@ -86,6 +125,55 @@ def _finish_run(
             row.error_message = error_message
 
 
+def mark_abandoned_runs_failed(
+    session_factory: sessionmaker[Session],
+    *,
+    started_before: datetime,
+    source: str | None = None,
+    scope_key: str | None = None,
+    detected_at: datetime | None = None,
+) -> tuple[int, ...]:
+    """Operator-declare old RUNNING rows abandoned and terminalize them.
+
+    M15 intentionally does not guess that a process is dead from elapsed time alone.
+    The caller supplies the cutoff. Only scrape_runs is changed; trusted product state,
+    RawEvidence, catalog coverage, observations, and semantic history are untouched.
+
+    Because a hard crash can happen after partial durable work but before M14 receives
+    a CatalogPersistenceResult, recovered rows keep ``accounting_complete = False``.
+    Zero counters on such a row therefore never claim that zero product work occurred.
+    """
+
+    terminal_at = detected_at or _utcnow()
+    with session_factory() as session:
+        with session.begin():
+            stmt = (
+                select(ScrapeRunRow)
+                .where(
+                    ScrapeRunRow.status == ScrapeRunStatus.RUNNING.value,
+                    ScrapeRunRow.started_at < started_before,
+                )
+                .order_by(ScrapeRunRow.id)
+                .with_for_update()
+            )
+            if source is not None:
+                stmt = stmt.where(ScrapeRunRow.source == source)
+            if scope_key is not None:
+                stmt = stmt.where(ScrapeRunRow.scope_key == scope_key)
+
+            rows = tuple(session.scalars(stmt))
+            for row in rows:
+                row.finished_at = terminal_at
+                row.status = ScrapeRunStatus.FAILED.value
+                row.accounting_complete = False
+                row.error_code = "RUN_ABANDONED"
+                row.error_message = (
+                    "operator marked RUNNING execution abandoned after cutoff "
+                    f"{started_before.isoformat()}; counters may be incomplete"
+                )
+            return tuple(row.id for row in rows)
+
+
 def execute_catalog_operation(
     session_factory: sessionmaker[Session],
     *,
@@ -93,23 +181,21 @@ def execute_catalog_operation(
     scope_key: str,
     operation: Callable[[], CatalogPersistenceResult],
     trigger: ScrapeRunTrigger | str = ScrapeRunTrigger.MANUAL,
+    retry_of_run_id: int | None = None,
 ) -> ScrapeRunResult:
     """Run one catalog operation under durable operational lifecycle accounting.
 
-    ScrapeRun is operational metadata only. Product truth remains in the existing
-    RawEvidence/observation/history/current-state pipeline. An INCOMPLETE catalog
-    acquisition is a FAILED operational run even though directly observed records
-    may have been safely persisted by the M8/M9 rules.
-
-    A hard process crash can leave RUNNING behind. Recovery/reaping of abandoned
-    runs is intentionally deferred to M15.
+    A returned CatalogPersistenceResult gives complete M14 accounting. An exception
+    can occur after partial durable work but before that envelope exists, so exception
+    failures are terminal FAILED with ``accounting_complete = False``.
     """
 
-    run_id = _start_run(
+    run_id, attempt = _start_run(
         session_factory,
         source=source,
         scope_key=scope_key,
         trigger=trigger,
+        retry_of_run_id=retry_of_run_id,
     )
     try:
         result = operation()
@@ -127,6 +213,7 @@ def execute_catalog_operation(
             run_id=run_id,
             status=status,
             counters=counters,
+            accounting_complete=True,
             error_code=error_code,
             error_message=error_message,
         )
@@ -135,6 +222,9 @@ def execute_catalog_operation(
             status=status,
             counters=counters,
             catalog_result=result,
+            retry_of_run_id=retry_of_run_id,
+            attempt=attempt,
+            accounting_complete=True,
             error_code=error_code,
             error_message=error_message,
         )
@@ -147,6 +237,7 @@ def execute_catalog_operation(
             run_id=run_id,
             status=ScrapeRunStatus.FAILED,
             counters=counters,
+            accounting_complete=False,
             error_code=error_code,
             error_message=error_message,
         )
@@ -161,11 +252,14 @@ def execute_catalog_acquisition(
     acquisition: Callable[[], CatalogAcquisition],
     trigger: ScrapeRunTrigger | str = ScrapeRunTrigger.MANUAL,
     changed_at: datetime | None = None,
+    retry_of_run_id: int | None = None,
 ) -> ScrapeRunResult:
-    """Start the run before acquisition, then pass acquired evidence to M0-M13.
+    """Acquire from the beginning, then pass evidence through M0-M14.
 
-    This is the entry point an external cron/systemd timer or manual source runner
-    should call. The scheduler is only a trigger and never becomes source of truth.
+    M15 retry is intentionally whole-run retry, not chunk-level resume. Existing
+    M0-M13 semantic idempotence protects trusted state when equivalent observations
+    are reprocessed. Durable acquisition cursors are deferred until a real source
+    demonstrates that restarting acquisition is insufficient.
     """
 
     def operation() -> CatalogPersistenceResult:
@@ -190,4 +284,58 @@ def execute_catalog_acquisition(
         scope_key=scope_key,
         operation=operation,
         trigger=trigger,
+        retry_of_run_id=retry_of_run_id,
+    )
+
+
+def _retry_parent_identity(
+    session_factory: sessionmaker[Session],
+    failed_run_id: int,
+) -> tuple[str, str]:
+    with session_factory() as session:
+        parent = session.get(ScrapeRunRow, failed_run_id)
+        if parent is None:
+            raise ValueError(f"retry parent scrape run {failed_run_id} does not exist")
+        if parent.status != ScrapeRunStatus.FAILED.value:
+            raise ValueError(
+                f"scrape run {failed_run_id} is {parent.status}; only FAILED runs may be retried"
+            )
+        return parent.source, parent.scope_key
+
+
+def retry_catalog_operation(
+    session_factory: sessionmaker[Session],
+    *,
+    failed_run_id: int,
+    operation: Callable[[], CatalogPersistenceResult],
+    trigger: ScrapeRunTrigger | str = ScrapeRunTrigger.MANUAL,
+) -> ScrapeRunResult:
+    source, scope_key = _retry_parent_identity(session_factory, failed_run_id)
+    return execute_catalog_operation(
+        session_factory,
+        source=source,
+        scope_key=scope_key,
+        operation=operation,
+        trigger=trigger,
+        retry_of_run_id=failed_run_id,
+    )
+
+
+def retry_catalog_acquisition(
+    session_factory: sessionmaker[Session],
+    *,
+    failed_run_id: int,
+    acquisition: Callable[[], CatalogAcquisition],
+    trigger: ScrapeRunTrigger | str = ScrapeRunTrigger.MANUAL,
+    changed_at: datetime | None = None,
+) -> ScrapeRunResult:
+    source, scope_key = _retry_parent_identity(session_factory, failed_run_id)
+    return execute_catalog_acquisition(
+        session_factory,
+        source=source,
+        scope_key=scope_key,
+        acquisition=acquisition,
+        trigger=trigger,
+        changed_at=changed_at,
+        retry_of_run_id=failed_run_id,
     )
