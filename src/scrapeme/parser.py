@@ -6,7 +6,7 @@ from src.acquisition.models import RawEvidence
 from src.products.models import ProductObservation
 
 
-EXTRACTOR_VERSION = "scrapeme-live-v1"
+EXTRACTOR_VERSION = "scrapeme-live-v2"
 SOURCE = "scrapeme_live"
 
 
@@ -33,10 +33,12 @@ def parse_product(evidence: RawEvidence) -> ProductObservation:
     title = summary.select_one("h1.product_title") or summary.select_one("h1")
     price = summary.select_one("p.price")
     stock = summary.select_one("p.stock")
-
-    # WooCommerce exposes multiple categories here while the M0 contract has
-    # one optional category field. M1 does not invent a primary category; leave
-    # it unset until a real requirement justifies category-cardinality changes.
+    sku = summary.select_one(".sku")
+    categories = tuple(
+        node.get_text(" ", strip=True)
+        for node in summary.select(".posted_in a")
+        if node.get_text(" ", strip=True)
+    )
 
     return ProductObservation(
         evidence_id=evidence.id,
@@ -48,4 +50,6 @@ def parse_product(evidence: RawEvidence) -> ProductObservation:
         price_raw=_text_or_none(price),
         availability_raw=_text_or_none(stock),
         category_raw=None,
+        categories_raw=categories,
+        sku_raw=_text_or_none(sku),
     )

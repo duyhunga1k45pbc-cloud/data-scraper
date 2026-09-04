@@ -11,10 +11,13 @@ from src.products.models import (
     Availability,
     Currency,
     CurrentProductState,
+    CurrentProductVariantState,
     ProductHistoryEntry,
     ProductIdentity,
     ProductNormalizedData,
     ProductObservation,
+    ProductVariantNormalizedData,
+    ProductVariantObservation,
     StateDecision,
     StateTransitionResult,
 )
@@ -50,6 +53,49 @@ def _identity_key(
     if canonical_product_url:
         return f"url:{canonical_product_url}"
     return None
+
+
+def _raw_variant_payload(variant: ProductVariantObservation) -> dict[str, object]:
+    return {
+        "sku_raw": variant.sku_raw,
+        "price_raw": variant.price_raw,
+        "availability_raw": variant.availability_raw,
+        "options_raw": [list(pair) for pair in variant.options_raw],
+    }
+
+
+def _normalized_variant_payload(variant: ProductVariantNormalizedData) -> dict[str, object]:
+    return {
+        "key": variant.key,
+        "sku": variant.sku,
+        "options": [list(pair) for pair in variant.options],
+        "price": str(variant.price) if variant.price is not None else None,
+        "availability": (
+            variant.availability.value if variant.availability is not None else None
+        ),
+    }
+
+
+def _state_variant_payload(variant: CurrentProductVariantState) -> dict[str, object]:
+    return {
+        "key": variant.key,
+        "sku": variant.sku,
+        "options": [list(pair) for pair in variant.options],
+        "price": str(variant.price),
+        "availability": variant.availability.value,
+    }
+
+
+def _variant_state_from_payload(payload: dict) -> CurrentProductVariantState:
+    options_raw = payload.get("options") or []
+    options = tuple((str(item[0]), str(item[1])) for item in options_raw)
+    return CurrentProductVariantState(
+        key=str(payload["key"]),
+        sku=str(payload["sku"]) if payload.get("sku") is not None else None,
+        options=options,
+        price=Decimal(str(payload["price"])),
+        availability=Availability(str(payload["availability"])),
+    )
 
 
 def persist_raw_evidence(session: Session, evidence: RawEvidence) -> RawEvidenceRow:
@@ -91,19 +137,39 @@ def find_product_row(
     source_record_id: str | None = None,
     identity_key: str | None = None,
 ) -> ProductRow | None:
-    key = identity_key or _identity_key(
-        canonical_product_url=canonical_product_url,
-        source_record_id=source_record_id,
-    )
-    if key is None:
-        return None
+    """Find one current product by its primary identity or a current locator.
 
-    return session.scalar(
-        select(ProductRow).where(
-            ProductRow.source == source,
-            ProductRow.identity_key == key,
+    ``identity_key`` and ``source_record_id`` target the primary M2/M3 identity.
+    A URL-only lookup intentionally queries ``canonical_product_url`` directly: a
+    product may use ``id:<source_record_id>`` as its primary identity while still
+    remaining addressable by its current canonical URL.
+    """
+
+    if identity_key is not None:
+        return session.scalar(
+            select(ProductRow).where(
+                ProductRow.source == source,
+                ProductRow.identity_key == identity_key,
+            )
         )
-    )
+
+    if source_record_id is not None:
+        return session.scalar(
+            select(ProductRow).where(
+                ProductRow.source == source,
+                ProductRow.identity_key == f"id:{source_record_id}",
+            )
+        )
+
+    if canonical_product_url is not None:
+        return session.scalar(
+            select(ProductRow).where(
+                ProductRow.source == source,
+                ProductRow.canonical_product_url == canonical_product_url,
+            )
+        )
+
+    return None
 
 
 def list_product_history_rows(
@@ -129,10 +195,16 @@ def row_to_current_state(row: ProductRow) -> CurrentProductState:
         ),
         title=row.title,
         price=Decimal(row.price),
+        compare_at_price=(
+            Decimal(row.compare_at_price) if row.compare_at_price is not None else None
+        ),
         currency=Currency(row.currency),
         availability=Availability(row.availability),
         quantity=row.quantity,
         category=row.category,
+        sku=row.sku,
+        categories=tuple(row.categories or []),
+        variants=tuple(_variant_state_from_payload(item) for item in (row.variants or [])),
         source_url=row.source_url,
         observed_at=row.observed_at,
         updated_at=row.updated_at,
@@ -150,9 +222,6 @@ def persist_product_observation(
         canonical_product_url=normalized.canonical_product_url,
         source_record_id=normalized.source_record_id,
     )
-    # Invalid identity still needs a deterministic observation key so the
-    # rejected observation can be traced without colliding with another record
-    # from the same multi-record evidence payload.
     if key is None:
         key = (
             f"rejected:{observation.source_record_id_raw or observation.source_url}:"
@@ -179,18 +248,26 @@ def persist_product_observation(
         observed_at=observation.observed_at,
         title_raw=observation.title_raw,
         price_raw=observation.price_raw,
+        compare_at_price_raw=observation.compare_at_price_raw,
         currency_raw=observation.currency_raw,
         availability_raw=observation.availability_raw,
         category_raw=observation.category_raw,
+        sku_raw=observation.sku_raw,
+        categories_raw=list(observation.categories_raw),
+        variants_raw=[_raw_variant_payload(item) for item in observation.variants_raw],
         canonical_product_url=normalized.canonical_product_url,
         title=normalized.title,
         price=normalized.price,
+        compare_at_price=normalized.compare_at_price,
         currency=normalized.currency.value if normalized.currency is not None else None,
         availability=(
             normalized.availability.value if normalized.availability is not None else None
         ),
         quantity=normalized.quantity,
         category=normalized.category,
+        sku=normalized.sku,
+        categories=list(normalized.categories),
+        variants=[_normalized_variant_payload(item) for item in normalized.variants],
         state_decision=transition.decision.value,
         validation_errors=[error.value for error in transition.validation_errors],
     )
@@ -207,10 +284,16 @@ def _state_snapshot(state: CurrentProductState) -> dict[str, object]:
         "canonical_product_url": state.identity.canonical_product_url,
         "title": state.title,
         "price": str(state.price),
+        "compare_at_price": (
+            str(state.compare_at_price) if state.compare_at_price is not None else None
+        ),
         "currency": state.currency.value,
         "availability": state.availability.value,
         "quantity": state.quantity,
         "category": state.category,
+        "sku": state.sku,
+        "categories": list(state.categories),
+        "variants": [_state_variant_payload(item) for item in state.variants],
         "source_url": state.source_url,
         "observed_at": state.observed_at.isoformat(),
         "updated_at": state.updated_at.isoformat(),
@@ -230,10 +313,14 @@ def _create_product_row(
         canonical_product_url=state.identity.canonical_product_url,
         title=state.title,
         price=state.price,
+        compare_at_price=state.compare_at_price,
         currency=state.currency.value,
         availability=state.availability.value,
         quantity=state.quantity,
         category=state.category,
+        sku=state.sku,
+        categories=list(state.categories),
+        variants=[_state_variant_payload(item) for item in state.variants],
         source_url=state.source_url,
         observed_at=state.observed_at,
         updated_at=state.updated_at,
@@ -255,10 +342,14 @@ def _update_product_row(
     row.canonical_product_url = state.identity.canonical_product_url
     row.title = state.title
     row.price = state.price
+    row.compare_at_price = state.compare_at_price
     row.currency = state.currency.value
     row.availability = state.availability.value
     row.quantity = state.quantity
     row.category = state.category
+    row.sku = state.sku
+    row.categories = list(state.categories)
+    row.variants = [_state_variant_payload(item) for item in state.variants]
     row.source_url = state.source_url
     row.observed_at = state.observed_at
     row.updated_at = state.updated_at

@@ -30,3 +30,5 @@ def test_scrapeme_raw_evidence_to_product_observation() -> None:
     assert observation.price_raw == "£156.00"
     assert observation.availability_raw == "31 in stock"
     assert observation.category_raw is None
+    assert observation.categories_raw == ("Flame", "Pokemon")
+    assert observation.sku_raw == "8840"

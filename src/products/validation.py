@@ -7,6 +7,7 @@ from .models import (
     ProductIdentity,
     ProductNormalizedData,
     ValidatedProduct,
+    ValidatedProductVariant,
     ValidationErrorCode,
     ValidationResult,
 )
@@ -16,6 +17,7 @@ SOURCE_HOSTS = {
     "books_to_scrape": "books.toscrape.com",
     "scrapeme_live": "scrapeme.live",
     "scrapify_js": "scrapifydatalabs.com",
+    "scraping_sandbox": "scrapingsandbox.com",
 }
 
 
@@ -48,6 +50,12 @@ def validate_product(data: ProductNormalizedData) -> ValidationResult:
     elif data.price < 0:
         errors.append(ValidationErrorCode.NEGATIVE_PRICE)
 
+    if data.compare_at_price is not None:
+        if data.compare_at_price < 0:
+            errors.append(ValidationErrorCode.NEGATIVE_COMPARE_AT_PRICE)
+        elif data.price is not None and data.compare_at_price < data.price:
+            errors.append(ValidationErrorCode.COMPARE_AT_BELOW_PRICE)
+
     if data.currency is None:
         errors.append(ValidationErrorCode.MISSING_CURRENCY)
 
@@ -72,6 +80,34 @@ def validate_product(data: ProductNormalizedData) -> ValidationResult:
     ):
         errors.append(ValidationErrorCode.INVALID_CANONICAL_URL)
 
+    validated_variants: list[ValidatedProductVariant] = []
+    variant_keys: set[str] = set()
+    for variant in data.variants:
+        if not variant.key:
+            errors.append(ValidationErrorCode.MISSING_VARIANT_IDENTITY)
+            continue
+        if variant.key in variant_keys:
+            errors.append(ValidationErrorCode.DUPLICATE_VARIANT_IDENTITY)
+            continue
+        variant_keys.add(variant.key)
+
+        if variant.price is None or variant.price < 0:
+            errors.append(ValidationErrorCode.INVALID_VARIANT_PRICE)
+            continue
+        if variant.availability is None:
+            errors.append(ValidationErrorCode.INVALID_VARIANT_AVAILABILITY)
+            continue
+
+        validated_variants.append(
+            ValidatedProductVariant(
+                key=variant.key,
+                sku=variant.sku,
+                options=variant.options,
+                price=variant.price,
+                availability=variant.availability,
+            )
+        )
+
     if errors:
         return ValidationResult(product=None, errors=tuple(errors))
 
@@ -91,10 +127,14 @@ def validate_product(data: ProductNormalizedData) -> ValidationResult:
             identity=identity,
             title=data.title,
             price=data.price,
+            compare_at_price=data.compare_at_price,
             currency=data.currency,
             availability=data.availability,
             quantity=data.quantity,
             category=data.category,
+            sku=data.sku,
+            categories=data.categories,
+            variants=tuple(validated_variants),
             source_url=(data.source_url or data.canonical_product_url or ""),
             observed_at=data.observed_at,
         ),

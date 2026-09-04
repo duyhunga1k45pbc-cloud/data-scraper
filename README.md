@@ -8,45 +8,49 @@ Current milestones:
 
 - **M0 — Books to Scrape:** one static HTML source, end-to-end correctness loop.
 - **M1 — ScrapeMe:** second HTML e-commerce source, shared `Product` state contract.
-- **M2 — Scrapify JS storefront:** dynamic page whose product grid is injected by JavaScript from a public JSON request.
+- **M2 — Scrapify JS:** one JSON payload can contain many product records and stable source IDs can be the best identity.
+- **M3 — ScrapingSandbox:** richer e-commerce semantics: compare-at pricing, SKU, variants, variant stock, and preserved category cardinality.
 
-## M2 finding
+## M3 finding
 
-The Scrapify storefront page is dynamic, but the deterministic source data is available from its public network endpoint:
+M2's product contract was still too narrow for richer e-commerce data.
 
-```text
-https://scrapifydatalabs.com/playground/js-rendered
-        ↓ JavaScript GET
-https://scrapifydatalabs.com/data/products.json
-```
-
-M2 therefore does **not** add Playwright. The mechanism is:
+ScrapingSandbox product pages expose product-level pricing plus a JSON snapshot containing:
 
 ```text
-Dynamic storefront
-      ↓ inspect acquisition boundary
-Public JSON endpoint
-      ↓ httpx
-RawEvidence (one JSON response)
-      ↓
-Many ProductObservations
-      ↓
-Normalize / Validate
-      ↓
-Shared Product State + History
+price
+compareAtPrice
+sku
+inStock
+category
+variants[]
+  ├── color
+  ├── size
+  ├── sku
+  ├── inStock
+  └── price
 ```
 
-This also proved two M1 assumptions were too narrow:
+The shared product contract therefore now preserves:
 
-1. one `RawEvidence` can contain many product records;
-2. a stable source record ID can be a better identity than a product URL.
+```text
+current product price
+compare-at/original price
+product SKU
+all observed categories
+variant identities/options
+variant price
+variant availability
+```
+
+A variant change is part of the trusted product state and can therefore produce an `UPDATE` + history entry.
 
 ## Core flow
 
 ```text
 External Source
       ↓
-Acquisition mechanism selected from observed source behavior
+Acquisition
       ↓
 RawEvidence
       ↓
@@ -69,9 +73,20 @@ Core rule:
 
 > Only validated and accepted product data may change trusted persisted state.
 
+## Current sources
+
+```text
+Books to Scrape   → static HTML
+ScrapeMe          → static WooCommerce HTML
+Scrapify JS       → public JSON endpoint observed behind JS storefront
+ScrapingSandbox   → product HTML containing deterministic JSON preview
+```
+
+M3 still does **not** add Playwright. The required richer product evidence is present in the fetched HTML, so `httpx + BeautifulSoup + JSON parsing` remains sufficient.
+
 ## Identity
 
-M2 supports either:
+Products can use either:
 
 ```text
 source + canonical_product_url
@@ -83,7 +98,19 @@ or:
 source + source_record_id
 ```
 
-Internally both become a stable `identity_key`.
+Variants currently live inside the parent product state and use a stable variant key, preferring SKU when available.
+
+## M3 validation additions
+
+```text
+compare_at_price >= current price, when present
+variant identity must exist
+variant identities must be unique within one product
+variant price must be valid and >= 0
+variant availability must be recognized
+```
+
+No assumption is made that product-level price equals min/max variant price.
 
 ## Persistence
 
@@ -97,13 +124,14 @@ products
 product_history
 ```
 
-Migration `0003_m2_multi_record_identity` preserves M0/M1 data while adding:
+Migration `0004_m3_richer_product_semantics` adds product/observation fields for:
 
-- `identity_key`
-- optional `source_record_id`
-- multi-record observation uniqueness
-- optional product URL for ID-identified records
-- raw currency provenance for JSON sources
+- compare-at price
+- SKU
+- full category list
+- variant snapshots
+
+Variants remain nested JSON in product state/history. They are not a separate table because M3 has no requirement for independent variant querying/history yet.
 
 ## Local PostgreSQL
 
@@ -121,16 +149,17 @@ Deterministic suite:
 pytest -q
 ```
 
-M2 live acquisition tests:
+M3 live source:
 
 ```bash
-RUN_LIVE=1 pytest -q tests/integration/test_scrapify_js_live.py
+RUN_LIVE=1 pytest -q tests/integration/test_scraping_sandbox_live.py
 ```
 
-M2 live + PostgreSQL:
+M3 live + PostgreSQL:
 
 ```bash
-RUN_LIVE=1 RUN_POSTGRES=1 pytest -q tests/integration/test_scrapify_js_postgres_e2e.py
+RUN_LIVE=1 RUN_POSTGRES=1 \
+pytest -q tests/integration/test_scraping_sandbox_postgres_e2e.py
 ```
 
 Full integration:
@@ -141,25 +170,27 @@ RUN_LIVE=1 RUN_POSTGRES=1 pytest -q tests/integration
 
 ## CLI
 
-Existing URL-identified products still work:
+Scrape the M3 product:
 
 ```bash
 python -m src.main scrape \
-  https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html
-
-python -m src.main scrape \
-  https://scrapeme.live/shop/Charizard/
+  https://scrapingsandbox.com/product/1
 ```
 
-Scrape the M2 JS storefront through its observed JSON acquisition path:
+Inspect current state/history:
+
+```bash
+python -m src.main show \
+  https://scrapingsandbox.com/product/1
+
+python -m src.main history \
+  https://scrapingsandbox.com/product/1
+```
+
+Existing M2 catalog commands remain available:
 
 ```bash
 python -m src.main scrape-catalog scrapify-js
-```
-
-Inspect a source-ID-identified product:
-
-```bash
 python -m src.main show-record scrapify_js p-1001
 python -m src.main history-record scrapify_js p-1001
 ```

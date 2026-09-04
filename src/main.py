@@ -221,7 +221,7 @@ def _command_history_record(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="data-scraper",
-        description="M2 product scraper CLI (static product pages + JS storefront API)",
+        description="M3 product scraper CLI (multi-source product state + richer e-commerce semantics)",
     )
     parser.add_argument(
         "--database-url",

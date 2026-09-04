@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 SOURCE_BY_HOST = {
     "books.toscrape.com": "books_to_scrape",
     "scrapeme.live": "scrapeme_live",
+    "scrapingsandbox.com": "scraping_sandbox",
 }
 
 

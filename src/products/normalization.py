@@ -4,7 +4,14 @@ import re
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit, urlunsplit
 
-from .models import Availability, Currency, ProductNormalizedData, ProductObservation
+from .models import (
+    Availability,
+    Currency,
+    ProductNormalizedData,
+    ProductObservation,
+    ProductVariantNormalizedData,
+    ProductVariantObservation,
+)
 
 
 _PRICE_WITH_SYMBOL_RE = re.compile(
@@ -88,7 +95,7 @@ def _normalize_availability(
         if match:
             return Availability.IN_STOCK, int(match.group("quantity"))
 
-    if source == "scrapify_js":
+    if source in {"scrapify_js", "scraping_sandbox"}:
         normalized = raw.strip().lower()
         if normalized == "true":
             return Availability.IN_STOCK, None
@@ -98,8 +105,68 @@ def _normalize_availability(
     return None, None
 
 
+def _normalize_categories(observation: ProductObservation) -> tuple[str, ...]:
+    values: list[str] = []
+    for raw in observation.categories_raw:
+        value = raw.strip()
+        if value and value not in values:
+            values.append(value)
+
+    if observation.category_raw is not None:
+        value = observation.category_raw.strip()
+        if value and value not in values:
+            values.append(value)
+
+    return tuple(values)
+
+
+def _normalize_variant(
+    source: str,
+    variant: ProductVariantObservation,
+    currency_raw: str | None,
+) -> ProductVariantNormalizedData:
+    sku = variant.sku_raw.strip() if variant.sku_raw is not None else None
+    sku = sku or None
+
+    options: list[tuple[str, str]] = []
+    for key_raw, value_raw in variant.options_raw:
+        key = key_raw.strip()
+        value = value_raw.strip()
+        if key and value:
+            options.append((key, value))
+    options_tuple = tuple(options)
+
+    if sku:
+        key = f"sku:{sku}"
+    elif options_tuple:
+        canonical_options = "|".join(
+            f"{name.lower()}={value}" for name, value in sorted(options_tuple)
+        )
+        key = f"options:{canonical_options}"
+    else:
+        key = None
+
+    price, _ = _normalize_price(variant.price_raw, currency_raw)
+    availability, _ = _normalize_availability(source, variant.availability_raw)
+
+    return ProductVariantNormalizedData(
+        key=key,
+        sku=sku,
+        options=options_tuple,
+        price=price,
+        availability=availability,
+    )
+
+
 def normalize_observation(observation: ProductObservation) -> ProductNormalizedData:
     price, currency = _normalize_price(observation.price_raw, observation.currency_raw)
+    compare_at_price, compare_currency = _normalize_price(
+        observation.compare_at_price_raw,
+        observation.currency_raw,
+    )
+    if compare_at_price is not None and compare_currency != currency:
+        compare_at_price = None
+
     availability, quantity = _normalize_availability(
         observation.source,
         observation.availability_raw,
@@ -123,6 +190,18 @@ def normalize_observation(observation: ProductObservation) -> ProductNormalizedD
     else:
         canonical_product_url = None
 
+    sku = observation.sku_raw.strip() if observation.sku_raw is not None else None
+    sku = sku or None
+    categories = _normalize_categories(observation)
+    variants = tuple(
+        _normalize_variant(
+            observation.source,
+            variant,
+            observation.currency_raw,
+        )
+        for variant in observation.variants_raw
+    )
+
     return ProductNormalizedData(
         source=observation.source,
         source_url=observation.source_url,
@@ -131,8 +210,12 @@ def normalize_observation(observation: ProductObservation) -> ProductNormalizedD
         observed_at=observation.observed_at,
         title=title,
         price=price,
+        compare_at_price=compare_at_price,
         currency=currency,
         availability=availability,
         quantity=quantity,
         category=category or None,
+        sku=sku,
+        categories=categories,
+        variants=variants,
     )

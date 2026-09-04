@@ -9,6 +9,7 @@ from src.acquisition.fetch import DEFAULT_TIMEOUT_SECONDS, fetch_url
 from src.acquisition.models import RawEvidence
 from src.books.parser import parse_book
 from src.scrapeme.parser import parse_product as parse_scrapeme_product
+from src.scraping_sandbox.parser import parse_product as parse_scraping_sandbox_product
 
 from .models import (
     CurrentProductState,
@@ -35,6 +36,8 @@ def parse_product_evidence(evidence: RawEvidence) -> ProductObservation:
         return parse_book(evidence)
     if source == "scrapeme_live":
         return parse_scrapeme_product(evidence)
+    if source == "scraping_sandbox":
+        return parse_scraping_sandbox_product(evidence)
     raise AssertionError(f"unhandled source: {source}")
 
 

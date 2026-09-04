@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from .models import (
     CurrentProductState,
+    CurrentProductVariantState,
     ProductHistoryEntry,
     ProductNormalizedData,
     StateDecision,
@@ -26,10 +27,23 @@ def _as_current_state(
         identity=product.identity,
         title=product.title,
         price=product.price,
+        compare_at_price=product.compare_at_price,
         currency=product.currency,
         availability=product.availability,
         quantity=product.quantity,
         category=product.category,
+        sku=product.sku,
+        categories=product.categories,
+        variants=tuple(
+            CurrentProductVariantState(
+                key=variant.key,
+                sku=variant.sku,
+                options=variant.options,
+                price=variant.price,
+                availability=variant.availability,
+            )
+            for variant in product.variants
+        ),
         source_url=product.source_url,
         observed_at=product.observed_at,
         updated_at=updated_at,
@@ -40,14 +54,28 @@ def _same_business_state(
     current: CurrentProductState,
     incoming: ValidatedProduct,
 ) -> bool:
+    incoming_variants = tuple(
+        CurrentProductVariantState(
+            key=variant.key,
+            sku=variant.sku,
+            options=variant.options,
+            price=variant.price,
+            availability=variant.availability,
+        )
+        for variant in incoming.variants
+    )
     return (
         current.identity == incoming.identity
         and current.title == incoming.title
         and current.price == incoming.price
+        and current.compare_at_price == incoming.compare_at_price
         and current.currency == incoming.currency
         and current.availability == incoming.availability
         and current.quantity == incoming.quantity
         and current.category == incoming.category
+        and current.sku == incoming.sku
+        and current.categories == incoming.categories
+        and current.variants == incoming_variants
         and current.source_url == incoming.source_url
     )
 
