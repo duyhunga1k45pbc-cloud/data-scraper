@@ -569,6 +569,8 @@ def _append_history(
     history: ProductHistoryEntry,
 ) -> ProductHistoryRow:
     row = ProductHistoryRow(
+        source=history.identity.source,
+        identity_key=history.identity.key,
         product_id=product_id,
         observation_id=observation_id,
         catalog_run_id=catalog_run_id,

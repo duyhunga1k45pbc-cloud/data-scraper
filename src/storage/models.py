@@ -190,10 +190,16 @@ class ProductHistoryRow(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    product_id: Mapped[int] = mapped_column(
+    # M12: history is the semantic ledger, not part of the mutable projection.
+    # Stable domain identity is persisted directly so the products projection can
+    # be detached/deleted and rebuilt without deleting history. product_id is a
+    # nullable convenience link to the current materialized projection row.
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    identity_key: Mapped[str] = mapped_column(Text, nullable=False)
+    product_id: Mapped[int | None] = mapped_column(
         Integer,
-        ForeignKey("products.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("products.id", ondelete="SET NULL"),
+        nullable=True,
     )
     book_id = synonym("product_id")
 

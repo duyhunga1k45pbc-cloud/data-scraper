@@ -558,12 +558,31 @@ def replay_source_projection(session: Session, *, source: str) -> ReplayReport:
             .order_by(ProductRow.identity_key)
         )
     )
+    current_identity_keys = {row.identity_key for row in rows}
+    ledger_identity_keys = set(
+        session.scalars(
+            select(ProductHistoryRow.identity_key).where(
+                ProductHistoryRow.source == source
+            )
+        )
+    )
+    for identity_key in sorted(ledger_identity_keys - current_identity_keys):
+        issues.append(
+            ReplayIssue(
+                code="MISSING_CURRENT_PROJECTION",
+                message="accepted semantic ledger has no current products row",
+                identity_key=identity_key,
+            )
+        )
 
     for row in rows:
         histories = list(
             session.scalars(
                 select(ProductHistoryRow)
-                .where(ProductHistoryRow.product_id == row.id)
+                .where(
+                    ProductHistoryRow.source == source,
+                    ProductHistoryRow.identity_key == row.identity_key,
+                )
                 .order_by(ProductHistoryRow.id)
             )
         )

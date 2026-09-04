@@ -81,6 +81,8 @@ def _seed_database(database_url: str) -> None:
 
             session.add(
                 BookHistoryRow(
+                    source="books_to_scrape",
+                    identity_key=f"url:{URL}",
                     book_id=book.id,
                     observation_id=observation.id,
                     decision="CREATE",

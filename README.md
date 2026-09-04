@@ -19,7 +19,50 @@ Current milestones:
 - **M9 — coverage proof:** COMPLETE is derived from persisted acquisition chunks/continuation evidence instead of being asserted by the caller.
 - **M10 — projection replay verification:** rebuild the trusted current projection from persisted semantic history/freshness evidence, verify provenance, and detect drift.
 - **M11 — version-addressable raw re-extraction:** retain historical extractor implementations by version and verify persisted observations by re-running the recorded runtime against RawEvidence.
+- **M12 — empty-projection recovery:** make semantic history independent from `products`, rebuild a source projection from the ledger, relink history, and verify the destructive cycle inside a rollback-only transaction.
 
+
+
+## M12 finding
+
+M10 could compute the expected projection, but the schema still made actual recovery impossible: `product_history.product_id` pointed to `products.id` with `ON DELETE CASCADE`. Deleting a projection row therefore deleted the semantic history needed to rebuild it. A projection that destroys its own ledger when removed is not truly rebuildable.
+
+M12 moves stable identity into the ledger itself:
+
+```text
+product_history
+├── source
+├── identity_key
+└── product_id  # nullable materialization link only
+```
+
+`product_id` now uses `ON DELETE SET NULL`; `(source, identity_key)` is the durable history identity. The rebuild path therefore starts with no trusted `products` state:
+
+```text
+RawEvidence --M11 re-extraction verification--> persisted observations
+                                      ↓
+product_history + catalog completeness/freshness evidence
+                                      ↓
+                         ledger-only expected projection
+                                      ↓
+                    detach history from product surrogate ids
+                                      ↓
+                              delete products projection
+                                      ↓
+                           materialize fresh products rows
+                                      ↓
+                         relink original history by identity
+```
+
+`build_source_projection_from_ledger()` never reads `products`. `rebuild_source_projection_in_place()` can therefore recover a source whose projection is already empty. It fails closed before deleting anything when raw extraction or ledger provenance is invalid.
+
+For routine proof, use the rollback-only CLI:
+
+```bash
+python -m src.main verify-rebuild scrapify_js
+```
+
+The verifier first checks the committed projection, runs the real delete/recreate/relink path, verifies the rebuilt state, then rolls the transaction back. When the original projection exists, M12 reuses its surrogate IDs during verification so PostgreSQL sequences are not consumed by a rollback-only proof.
 
 
 ## M11 finding
@@ -233,6 +276,10 @@ M11 adds:
 
 > A persisted extractor version must resolve to an explicit retained runtime, and that runtime must reproduce the persisted extraction boundary from RawEvidence.
 
+M12 adds:
+
+> The semantic ledger must survive removal of the mutable `products` projection and must be sufficient to materialize and relink an equivalent projection from empty state.
+
 ## Current sources
 
 ```text
@@ -292,12 +339,12 @@ raw_evidence
    ↓ 1:N
 product_observations
       ↓ accepted state decision
-products
-      ↓
-product_history
+product_history  ← stable semantic ledger (`source`, `identity_key`)
+      ↓ nullable materialization link
+products         ← rebuildable current projection
 ```
 
-M4 through M7 require **no schema migration**. M8 adds migration `0005_m8_catalog_completeness`. M9 adds `0006_m9_catalog_coverage_proof`, which persists catalog run keys/start refs and the 1:N `catalog_run_chunks` proof relation.
+M4 through M7 require **no schema migration**. M8 adds migration `0005_m8_catalog_completeness`. M9 adds `0006_m9_catalog_coverage_proof`, which persists catalog run keys/start refs and the 1:N `catalog_run_chunks` proof relation. M12 adds `0007_m12_rebuildable_projection`, which decouples semantic history identity from the mutable `products` surrogate row.
 
 ## Local PostgreSQL
 
@@ -406,6 +453,17 @@ RUN_POSTGRES=1 \
 pytest -q tests/integration/test_m11_postgres_raw_reextraction.py
 ```
 
+M12 empty-projection rebuild tests:
+
+```bash
+pytest -q \
+  tests/acceptance/test_m12_projection_rebuild.py \
+  tests/unit/test_m12_rebuild_cli.py
+
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m12_postgres_projection_rebuild.py
+```
+
 Full integration suite, including live sources:
 
 ```bash
@@ -454,6 +512,14 @@ python -m src.main verify-extraction scrapify_js
 ```
 
 Exit code `0` means every recorded extractor runtime reproduced its persisted observations; exit code `1` means extraction provenance diverged.
+
+M12 can prove a real projection delete/recreate/relink cycle without committing it:
+
+```bash
+python -m src.main verify-rebuild scrapify_js
+```
+
+Exit code `0` means the independent ledger rebuilt an equivalent projection and the transaction was rolled back; exit code `1` means the pre-check, extraction chain, ledger, or rebuilt projection diverged.
 
 ## Architecture contract
 

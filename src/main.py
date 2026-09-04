@@ -20,6 +20,7 @@ from src.storage.repositories import (
     row_to_current_state,
 )
 from src.storage.reextraction import verify_source_reextraction
+from src.storage.rebuild import rebuild_source_projection_in_place
 from src.storage.replay import replay_source_projection
 from src.storage.service import persist_product_url
 
@@ -274,10 +275,85 @@ def _command_verify_extraction(args: argparse.Namespace) -> int:
     finally:
         engine.dispose()
 
+
+
+def _command_verify_rebuild(args: argparse.Namespace) -> int:
+    database_url = _resolve_database_url(args.database_url)
+    engine, session_factory = _open_session_factory(database_url)
+    try:
+        with session_factory() as session:
+            transaction = session.begin()
+            try:
+                before = replay_source_projection(session, source=args.source)
+                if not before.is_consistent:
+                    payload = {
+                        "source": args.source,
+                        "status": "DIVERGED",
+                        "stage": "PRE_REBUILD_CHECK",
+                        "products": len(before.products),
+                        "history_rows": None,
+                        "rolled_back": True,
+                        "issues": [
+                            {
+                                "code": item.code,
+                                "message": item.message,
+                                "identity_key": item.identity_key,
+                                "history_id": item.history_id,
+                            }
+                            for item in before.issues
+                        ],
+                    }
+                    transaction.rollback()
+                    _print_json(payload)
+                    return 1
+
+                rebuilt = rebuild_source_projection_in_place(
+                    session,
+                    source=args.source,
+                )
+                after = replay_source_projection(session, source=args.source)
+                consistent = rebuilt.is_consistent and after.is_consistent
+                issues = [
+                    {
+                        "code": item.code,
+                        "message": item.message,
+                        "identity_key": item.identity_key,
+                        "history_id": item.history_id,
+                    }
+                    for item in rebuilt.issues
+                ]
+                issues.extend(
+                    {
+                        "code": item.code,
+                        "message": item.message,
+                        "identity_key": item.identity_key,
+                        "history_id": item.history_id,
+                    }
+                    for item in after.issues
+                )
+                payload = {
+                    "source": args.source,
+                    "status": "CONSISTENT" if consistent else "DIVERGED",
+                    "stage": "REBUILT_PROJECTION",
+                    "products": len(rebuilt.products),
+                    "history_rows": rebuilt.history_rows,
+                    "extraction_evidence_groups": rebuilt.extraction.evidence_groups,
+                    "rolled_back": True,
+                    "issues": issues,
+                }
+                transaction.rollback()
+                _print_json(payload)
+                return 0 if consistent else 1
+            except Exception:
+                transaction.rollback()
+                raise
+    finally:
+        engine.dispose()
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="data-scraper",
-        description="M3 product scraper CLI (multi-source product state + richer e-commerce semantics)",
+        description="Evidence-backed multi-source product state scraper CLI",
     )
     parser.add_argument(
         "--database-url",
@@ -343,6 +419,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_extraction.add_argument("source")
     verify_extraction.set_defaults(handler=_command_verify_extraction)
+
+    verify_rebuild = subparsers.add_parser(
+        "verify-rebuild",
+        help=(
+            "delete and recreate one source projection from the independent ledger "
+            "inside a rollback-only verification transaction"
+        ),
+    )
+    verify_rebuild.add_argument("source")
+    verify_rebuild.set_defaults(handler=_command_verify_rebuild)
 
     return parser
 

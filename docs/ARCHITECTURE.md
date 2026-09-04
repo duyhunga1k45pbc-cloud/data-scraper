@@ -353,6 +353,12 @@ invalid normalized data
 
 **INV-22 (M10)** Replay may trust an accepted transition only when its persisted provenance remains valid: direct transitions require an intact RawEvidence hash through `ProductObservation`; disappearance requires a re-derived COMPLETE catalog chunk proof with intact linked RawEvidence.
 
+**INV-23 (M11)** Every persisted `(source, extractor_version)` used by observations must resolve to an explicit retained extractor runtime; verification must never fall back to a newer parser version.
+
+**INV-24 (M11)** Re-running the recorded extractor runtime against intact RawEvidence must reproduce the persisted extraction boundary as an observation multiset.
+
+**INV-25 (M12)** Semantic history must survive loss of the mutable `products` projection and remain sufficient to recreate an equivalent current projection and relink history by stable `(source, identity_key)`.
+
 ## 11. Persistence
 
 ```text
@@ -366,10 +372,10 @@ catalog_runs
 raw_evidence
    ↓ 1:N
 product_observations
-      ↓ accepted
-   products
-      ↓
-product_history
+      ↓ accepted provenance
+product_history  ← stable semantic ledger
+      ↓ nullable product_id materialization link
+products         ← rebuildable current projection
 ```
 
 Migrations remain:
@@ -381,9 +387,10 @@ Migrations remain:
 0004 M3 richer product semantics
 0005 M8 catalog completeness + product presence semantics
 0006 M9 catalog coverage proof + chunk provenance
+0007 M12 rebuildable projection + projection-independent history identity
 ```
 
-M4, M5, M6, M7, and M10 add **no migration**. Existing state/history snapshots and the string `state_decision` column already support semantic comparison and the explicit `STALE` decision.
+M4, M5, M6, M7, M10, and M11 add **no migration**. Existing state/history snapshots and the string `state_decision` column already support semantic comparison and the explicit `STALE` decision.
 
 M6 changes the PostgreSQL state-transition read for an existing product to:
 
@@ -586,7 +593,61 @@ verify-extraction <source>
 
 A successful report proves that the currently retained historical runtime still reproduces the persisted extraction boundary from intact RawEvidence. It is separate from M10 projection replay: M11 checks **RawEvidence → ProductObservation**, while M10 checks **persisted semantic ledger → CurrentProductState**.
 
-## 19. Acceptance criteria
+## 19. M12 rebuildable-projection failure and correction
+
+M10 proved that the current projection could be *computed* from the semantic ledger, but an operational rebuild exposed a schema contradiction. `product_history.product_id` still referenced `products.id` with `ON DELETE CASCADE`:
+
+```text
+delete products row
+        ↓
+ON DELETE CASCADE
+        ↓
+delete product_history
+        ↓
+rebuild evidence destroyed
+```
+
+That means `products` was not actually a disposable projection. M12 makes history identity independent from the projection:
+
+```text
+product_history
+├── source             # stable domain source
+├── identity_key       # stable domain identity
+└── product_id         # nullable link to current materialization
+                         ON DELETE SET NULL
+```
+
+The accepted semantic ledger can now be discovered by `(source, identity_key)` without reading `products`. `build_source_projection_from_ledger()` starts from an empty in-memory projection, checks history continuity/provenance, applies M10 no-history presence freshness, and produces the expected current states. M11 raw re-extraction is run before a destructive materialization so an invalid extraction chain fails closed.
+
+The actual recovery mechanism is:
+
+```text
+verify RawEvidence → historical extraction
+        ↓
+build expected state from independent semantic ledger
+        ↓
+set product_history.product_id = null
+        ↓
+delete products for source
+        ↓
+insert fresh products rows
+        ↓
+relink product_history by (source, identity_key)
+        ↓
+replay/compare rebuilt projection
+```
+
+A source may therefore be recovered even when its `products` rows are already absent. Surrogate product IDs are not part of state meaning. During rollback-only verification on a healthy projection, the old IDs are explicitly reused so PostgreSQL sequences are not advanced by a proof that will be rolled back.
+
+`verify-rebuild <source>` performs the real delete/recreate/relink operation inside a transaction and always rolls it back. It first runs the M10 committed-projection pre-check; any pre-existing drift fails before the destructive proof. A recovery caller can invoke the same rebuild function in an explicitly owned transaction and commit only after inspecting the report.
+
+New invariant:
+
+```text
+INV-25 semantic history must survive projection loss and be sufficient to recreate an equivalent current projection
+```
+
+## 20. Acceptance criteria
 
 ```text
 AC-16 product price change → one UPDATE with correct previous/new snapshots
@@ -624,9 +685,14 @@ AC-47 one-record RawEvidence re-extraction reproduces the persisted ProductObser
 AC-48 one-to-many RawEvidence re-extraction reproduces the persisted observation multiset independent of record ordering
 AC-49 persisted extraction drift produces missing/extra re-extraction diagnostics rather than being accepted as equivalent
 AC-50 PostgreSQL RawEvidence re-extraction with the recorded runtime reproduces the committed observation boundary
+AC-51 deleting/detaching a source projection leaves semantic history discoverable by stable source + identity_key
+AC-52 an already-empty products projection can be rebuilt to the same semantic state, including no-history presence freshness
+AC-53 projection rebuild relinks every original history row to the newly materialized product identity without rewriting history ids
+AC-54 invalid RawEvidence/extraction provenance fails closed before projection deletion
+AC-55 PostgreSQL delete/recreate/relink verification succeeds inside a transaction and rollback restores the committed projection/history links
 ```
 
-## 20. Freeze rule
+## 21. Freeze rule
 
 ```text
 new mechanism only if
