@@ -599,6 +599,18 @@ through the accepted observation to the exact RawEvidence
 captured from the live source
 ```
 
+### AC-09 — CLI delivery
+
+```text
+Given a persisted trusted book state and history
+When a downstream user invokes the M0 CLI
+Then `show` returns the current trusted state
+And `history` returns accepted state transitions
+And `scrape` runs the live acquisition-to-persistence path and reports its state decision
+```
+
+The CLI is a delivery mechanism only. It must not duplicate validation or state-transition rules; it composes the existing acquisition, domain, and persistence services.
+
 ## 12. M0 code boundaries
 
 Initial code structure:
@@ -620,7 +632,7 @@ src/
 │   ├── models.py
 │   └── repositories.py
 │
-└── main.py
+└── main.py              # CLI delivery composition only
 
 tests/
 ```

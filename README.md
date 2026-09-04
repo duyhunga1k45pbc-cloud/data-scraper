@@ -151,6 +151,42 @@ RUN_POSTGRES=1 pytest -q tests/integration/test_postgres_persistence.py
 
 To combine the real external source with persisted state, use `persist_book_url(...)` from `src.storage.service` with a configured SQLAlchemy session factory.
 
+## CLI delivery
+
+The M0 delivery interface is a small command-line interface (CLI). It intentionally
+uses the Python standard library rather than adding another framework.
+
+With PostgreSQL running and `DATABASE_URL` set:
+
+```bash
+export DATABASE_URL='postgresql+psycopg://data_scraper:data_scraper@localhost:5433/data_scraper'
+```
+
+Fetch one book and persist its evidence, observation, state decision, current state,
+and history:
+
+```bash
+python -m src.main scrape \
+  https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html
+```
+
+Read the current trusted state:
+
+```bash
+python -m src.main show \
+  https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html
+```
+
+Read accepted state-transition history:
+
+```bash
+python -m src.main history \
+  https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html
+```
+
+All three commands emit JSON. After installing the project (`pip install -e .`),
+the equivalent `data-scraper` command is also available.
+
 ## Live PostgreSQL end-to-end proof
 
 With PostgreSQL running and migrated:

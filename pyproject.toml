@@ -11,6 +11,9 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
 ]
 
+[project.scripts]
+data-scraper = "src.main:entrypoint"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

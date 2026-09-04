@@ -83,6 +83,20 @@ def find_book_row(
     )
 
 
+def list_book_history_rows(
+    session: Session,
+    *,
+    book_id: int,
+) -> list[BookHistoryRow]:
+    return list(
+        session.scalars(
+            select(BookHistoryRow)
+            .where(BookHistoryRow.book_id == book_id)
+            .order_by(BookHistoryRow.id)
+        )
+    )
+
+
 def row_to_current_state(row: BookRow) -> CurrentBookState:
     return CurrentBookState(
         identity=BookIdentity(
