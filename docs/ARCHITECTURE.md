@@ -453,6 +453,18 @@ Their meanings are distinct:
 
 Persistence design must preserve the invariants above, especially the atomic relationship between current-state updates and history.
 
+### 9.1 Implemented persistence contract
+
+M0 persistence uses the four tables above without introducing a generic repository or entity framework.
+
+`book_observations` stores both source-shaped and normalized values, plus the state decision and validation errors. This preserves the divergence path through observation, normalization, and validation while keeping the persistence model at four tables.
+
+`books.accepted_observation_id` identifies the observation that produced the current trusted state. A `NO_CHANGE` or `REJECT` observation does not replace that provenance.
+
+`book_history.observation_id` identifies the observation that caused each accepted `CREATE` or `UPDATE` transition.
+
+For `CREATE` and `UPDATE`, current-state mutation and history append are committed in the same database transaction to enforce INV-05. Raw evidence is committed before extraction/state persistence so the exact external input remains available even if a later processing step fails.
+
 ## 10. Divergence tracing
 
 The architecture must allow a result to be traced backward through the representation chain:
@@ -562,6 +574,29 @@ And exactly one history transition is appended
 Given raw evidence containing price £51.77
 When extraction runs
 Then the resulting observation must correspond to £51.77
+```
+
+### AC-07 — Atomic state/history rollback
+
+```text
+Given current price = £51.77
+When a valid £45.00 update reaches persistence
+And history append fails after the current-state row has been updated in the transaction
+Then the entire state transaction rolls back
+And current price remains £51.77
+And no new history entry exists
+And no accepted observation from the failed transaction remains
+And the exact RawEvidence remains persisted for audit/replay
+```
+
+### AC-08 — Live source to persisted state trace
+
+```text
+Given the live Books to Scrape product page and PostgreSQL
+When the full M0 pipeline runs
+Then the persisted current state and history are traceable
+through the accepted observation to the exact RawEvidence
+captured from the live source
 ```
 
 ## 12. M0 code boundaries
@@ -677,3 +712,5 @@ This document is the M0 architecture contract.
 The next implementation step is to create the minimal code skeleton and acceptance tests that make this contract executable.
 
 After M0 works against Books to Scrape, a real e-commerce source should be used to reveal which abstractions are actually shared before any generic framework is introduced.
+
+

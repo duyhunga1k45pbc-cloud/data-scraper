@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: data_scraper
+      POSTGRES_USER: data_scraper
+      POSTGRES_PASSWORD: data_scraper
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U data_scraper -d data_scraper"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - data_scraper_postgres:/var/lib/postgresql/data
+
+volumes:
+  data_scraper_postgres:

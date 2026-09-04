@@ -2,7 +2,19 @@
 name = "data-scraper"
 version = "0.1.0"
 requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27,<1",
+    "beautifulsoup4>=4.12,<5",
+    "lxml>=5,<7",
+    "SQLAlchemy>=2.0,<3",
+    "alembic>=1.13,<2",
+    "psycopg[binary]>=3.2,<4",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "live: tests that call the real external source",
+    "postgres: tests that require a PostgreSQL database",
+]
