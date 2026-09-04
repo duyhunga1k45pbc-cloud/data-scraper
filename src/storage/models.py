@@ -219,6 +219,38 @@ class ProductHistoryRow(Base):
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ScrapeRunRow(Base):
+    __tablename__ = "scrape_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('RUNNING', 'SUCCEEDED', 'FAILED')",
+            name="ck_scrape_runs_status",
+        ),
+        CheckConstraint(
+            "trigger_type IN ('MANUAL', 'SCHEDULED')",
+            name="ck_scrape_runs_trigger_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    trigger_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    records_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    records_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    records_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    records_no_change: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    records_stale: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    records_rejected: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    records_disappeared: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    records_reappeared: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 BookObservationRow = ProductObservationRow
 BookRow = ProductRow
 BookHistoryRow = ProductHistoryRow

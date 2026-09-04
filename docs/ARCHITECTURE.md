@@ -1,6 +1,6 @@
 # Data Scraper — Architecture Contract
 
-## 1. Current scope: M10
+## 1. Current scope: M14
 
 M0 established the correctness loop. M1 proved a shared product core across two HTML sources. M2 falsified one-evidence/one-observation and URL-only identity assumptions. M3 expanded product meaning to richer e-commerce semantics. M3.1 separated primary identity from lookup locators. M4 made history semantic rather than presentation-order sensitive.
 
@@ -751,3 +751,47 @@ Replay compares semantic trusted state, not storage formatting. PostgreSQL
 monetary decimal representations (product price, compare-at price, and variant
 price) before projection comparison. Scale-only differences therefore cannot
 produce a false replay drift signal.
+
+## M14 — operational run lifecycle
+
+M13 closes the clean-database recovery boundary. M14 starts the operational phase: a scrape execution is now durable operational state without becoming business truth.
+
+```text
+manual trigger / cron / systemd timer
+        ↓
+ScrapeRun(RUNNING)
+        ↓
+existing acquisition + M0-M13 correctness pipeline
+        ↓
+CatalogPersistenceResult
+├── directly observed results
+└── absence transitions
+        ↓
+ScrapeRun(SUCCEEDED | FAILED) + exact counters
+```
+
+The scheduler is only a trigger. Product truth remains in RawEvidence, observations, semantic history, and the rebuildable current projection. `scrape_runs` is therefore operational metadata and is not added to the M13 semantic recovery bundle.
+
+M14 deliberately records an INCOMPLETE catalog as a FAILED operational run while preserving the M8/M9 rule that directly observed valid records may still be processed and missing records may not be interpreted as disappearance. A hard process crash may leave a run in RUNNING; abandoned-run detection/retry/resume is deferred to M15.
+
+### M14 invariants
+
+**INV-27** Every instrumented scrape execution creates exactly one identifiable ScrapeRun before acquisition/state work begins.
+
+**INV-28** ScrapeRun status and counters describe execution outcome only; they must not override or fabricate trusted product-state decisions.
+
+**INV-29** An INCOMPLETE catalog or execution failure must not be reported as SUCCEEDED and must not weaken M8/M9 completeness semantics.
+
+**INV-30** A normally finalized run has exactly one terminal status, SUCCEEDED or FAILED.
+
+### M14 acceptance criteria
+
+```text
+AC-60 successful scheduled execution -> RUNNING -> SUCCEEDED with finished_at
+AC-61 counters are derived from actual direct transition results
+AC-62 DISAPPEARED counting comes from explicit absence transition results, not DB time-window reconstruction
+AC-63 INCOMPLETE catalog -> FAILED operational run while partial trusted processing remains governed by M8/M9
+AC-64 raised execution error -> FAILED with explicit error metadata and the error is re-raised
+AC-65 MANUAL and SCHEDULED triggers use the same correctness pipeline; trigger type has no authority over trusted state
+```
+

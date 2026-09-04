@@ -60,6 +60,27 @@ class PersistedProductRun:
         """M0 compatibility alias."""
         return self.product_id
 
+@dataclass(frozen=True)
+class CatalogPersistenceResult:
+    catalog_run_id: int
+    coverage_status: CatalogRunStatus
+    observed_results: tuple[PersistedProductRun, ...]
+    absence_transitions: tuple[StateTransitionResult, ...]
+
+    # M8-M13 callers historically treated catalog persistence as the tuple of
+    # directly observed product results. Preserve read-only tuple-like access
+    # while exposing absence transitions explicitly for M14 accounting.
+    def __iter__(self):
+        return iter(self.observed_results)
+
+    def __len__(self) -> int:
+        return len(self.observed_results)
+
+    def __getitem__(self, index):
+        return self.observed_results[index]
+
+
+
 
 def _persist_observations_transaction(
     session_factory: sessionmaker[Session],
@@ -209,7 +230,7 @@ def _persist_catalog_acquisition_transaction(
     acquisition: CatalogAcquisition,
     *,
     changed_at: datetime | None,
-) -> tuple[PersistedProductRun, ...]:
+) -> CatalogPersistenceResult:
     """Persist an evidence-backed catalog acquisition and reconcile presence.
 
     M9 removes the caller-supplied COMPLETE assertion from the primary path.
@@ -228,6 +249,8 @@ def _persist_catalog_acquisition_transaction(
     complete = acquisition.coverage_status == CatalogRunStatus.COMPLETE
 
     results: list[PersistedProductRun] = []
+
+    absence_transitions: list[StateTransitionResult] = []
     with session_factory() as session:
         with session.begin():
             lock_catalog_scope_for_reconciliation(
@@ -359,15 +382,22 @@ def _persist_catalog_acquisition_transaction(
                         catalog_run_id=catalog_run.id,
                     )
 
-    return tuple(results)
+                    absence_transitions.append(transition)
+
+    return CatalogPersistenceResult(
+        catalog_run_id=catalog_run.id,
+        coverage_status=acquisition.coverage_status,
+        observed_results=tuple(results),
+        absence_transitions=tuple(absence_transitions),
+    )
 
 
-def persist_catalog_acquisition(
+def persist_catalog_acquisition_result(
     session_factory: sessionmaker[Session],
     acquisition: CatalogAcquisition,
     *,
     changed_at: datetime | None = None,
-) -> tuple[PersistedProductRun, ...]:
+) -> CatalogPersistenceResult:
     """Persist all available evidence before applying the catalog state transaction."""
 
     with session_factory() as session:
@@ -380,6 +410,27 @@ def persist_catalog_acquisition(
         acquisition,
         changed_at=changed_at,
     )
+
+
+def persist_catalog_acquisition(
+    session_factory: sessionmaker[Session],
+    acquisition: CatalogAcquisition,
+    *,
+    changed_at: datetime | None = None,
+) -> tuple[PersistedProductRun, ...]:
+    """M9-compatible catalog persistence API.
+
+    M14 needs richer operational accounting, but M0-M13 callers historically
+    receive only directly observed product results. Keep that public contract
+    stable and expose the richer envelope through
+    ``persist_catalog_acquisition_result``.
+    """
+
+    return persist_catalog_acquisition_result(
+        session_factory,
+        acquisition,
+        changed_at=changed_at,
+    ).observed_results
 
 
 def persist_catalog_observations(

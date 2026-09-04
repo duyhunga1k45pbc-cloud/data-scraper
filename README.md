@@ -596,3 +596,26 @@ observed failure mode
 OR
 current mechanism cannot preserve an invariant
 ```
+
+## M14 finding — operational run lifecycle
+
+M0-M13 made the scraper correct when invoked, but execution itself was implicit. M14 introduces `scrape_runs` as operational metadata and an explicit result envelope from catalog persistence.
+
+```text
+trigger
+  ↓
+ScrapeRun RUNNING
+  ↓
+existing acquisition / evidence / semantic-state pipeline
+  ↓
+CatalogPersistenceResult
+  ↓
+ScrapeRun SUCCEEDED or FAILED + counters
+```
+
+`CatalogPersistenceResult` contains both directly observed product results and absence transitions, so `DISAPPEARED` is counted from the actual transition rather than reconstructed later from database timestamps.
+
+A COMPLETE acquisition can finish SUCCEEDED. An INCOMPLETE acquisition is recorded as FAILED operationally, while the existing M8/M9 rules still allow safe processing of directly observed records and forbid false disappearance. Exceptions finalize FAILED and are re-raised. A process crash can still leave RUNNING; retry/resume/reaping is intentionally M15.
+
+M14 does not embed a scheduler framework. Cron/systemd may trigger the same run service with `trigger_type=SCHEDULED`; scheduling never becomes source of truth.
+
