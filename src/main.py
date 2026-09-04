@@ -14,6 +14,13 @@ from src.products.normalization import canonicalize_product_url
 from src.products.source import UnsupportedSourceError, source_for_url
 from src.scrapify_js.service import persist_catalog as persist_scrapify_catalog
 from src.storage.database import create_database_engine, create_session_factory
+from src.storage.disaster_recovery import (
+    RecoveryError,
+    load_recovery_bundle,
+    recover_bundle_into_session,
+    verify_disaster_recovery,
+    write_recovery_bundle,
+)
 from src.storage.repositories import (
     find_product_row,
     list_product_history_rows,
@@ -350,6 +357,85 @@ def _command_verify_rebuild(args: argparse.Namespace) -> int:
     finally:
         engine.dispose()
 
+
+def _recovery_report_payload(report) -> dict[str, Any]:
+    return {
+        "status": report.status,
+        "stage": report.stage,
+        "sources": list(report.sources),
+        "durable_rows": report.durable_rows,
+        "products": report.products,
+        "rolled_back": report.rolled_back,
+        "issues": [
+            {
+                "code": item.code,
+                "message": item.message,
+                "source": item.source,
+                "identity_key": item.identity_key,
+            }
+            for item in report.issues
+        ],
+    }
+
+
+def _command_export_recovery(args: argparse.Namespace) -> int:
+    database_url = _resolve_database_url(args.database_url)
+    engine, session_factory = _open_session_factory(database_url)
+    try:
+        with session_factory() as session:
+            bundle = write_recovery_bundle(session, args.output)
+            tables = bundle["tables"]
+            payload = {
+                "status": "EXPORTED",
+                "output": args.output,
+                "bundle_hash": bundle["bundle_hash"],
+                "durable_rows": {name: len(rows) for name, rows in sorted(tables.items())},
+            }
+            _print_json(payload)
+            return 0
+    finally:
+        engine.dispose()
+
+
+def _command_restore_recovery(args: argparse.Namespace) -> int:
+    database_url = _resolve_database_url(args.database_url)
+    try:
+        bundle = load_recovery_bundle(args.input)
+    except RecoveryError as exc:
+        raise CliError(str(exc)) from exc
+    engine, session_factory = _open_session_factory(database_url)
+    try:
+        with session_factory() as session:
+            transaction = session.begin()
+            try:
+                report = recover_bundle_into_session(session, bundle)
+                if not report.is_consistent:
+                    transaction.rollback()
+                    _print_json(_recovery_report_payload(report))
+                    return 1
+                transaction.commit()
+                _print_json(_recovery_report_payload(report))
+                return 0
+            except RecoveryError as exc:
+                transaction.rollback()
+                raise CliError(str(exc)) from exc
+            except Exception:
+                transaction.rollback()
+                raise
+    finally:
+        engine.dispose()
+
+
+def _command_verify_disaster_recovery(args: argparse.Namespace) -> int:
+    database_url = _resolve_database_url(args.database_url)
+    engine = create_database_engine(database_url)
+    try:
+        report = verify_disaster_recovery(engine)
+        _print_json(_recovery_report_payload(report))
+        return 0 if report.is_consistent else 1
+    finally:
+        engine.dispose()
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="data-scraper",
@@ -429,6 +515,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_rebuild.add_argument("source")
     verify_rebuild.set_defaults(handler=_command_verify_rebuild)
+
+    export_recovery = subparsers.add_parser(
+        "export-recovery",
+        help="export durable evidence/ledger state without the rebuildable products projection",
+    )
+    export_recovery.add_argument("output")
+    export_recovery.set_defaults(handler=_command_export_recovery)
+
+    restore_recovery = subparsers.add_parser(
+        "restore-recovery",
+        help="restore a recovery bundle into an empty migrated database and rebuild products",
+    )
+    restore_recovery.add_argument("input")
+    restore_recovery.set_defaults(handler=_command_restore_recovery)
+
+    verify_dr = subparsers.add_parser(
+        "verify-disaster-recovery",
+        help="restore the durable bundle into a fresh rollback-only PostgreSQL schema and compare projections",
+    )
+    verify_dr.set_defaults(handler=_command_verify_disaster_recovery)
 
     return parser
 

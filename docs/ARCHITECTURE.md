@@ -359,6 +359,8 @@ invalid normalized data
 
 **INV-25 (M12)** Semantic history must survive loss of the mutable `products` projection and remain sufficient to recreate an equivalent current projection and relink history by stable `(source, identity_key)`.
 
+**INV-26 (M13)** An independently exported durable recovery bundle must be sufficient to restore a clean migrated database and recreate the same semantic `products` projection without copying `products` itself.
+
 ## 11. Persistence
 
 ```text
@@ -647,7 +649,43 @@ New invariant:
 INV-25 semantic history must survive projection loss and be sufficient to recreate an equivalent current projection
 ```
 
-## 20. Acceptance criteria
+
+## 20. M13 clean-database disaster recovery
+
+M12 could recover a lost `products` projection only while the rest of the database still existed. A real database-loss scenario has a harder boundary: evidence and ledger stored only inside the failed database are unavailable. M13 therefore makes the recovery input explicit instead of pretending that a clean database can reconstruct information it no longer has.
+
+The application-level recovery bundle contains the durable chain and excludes the projection:
+
+```text
+raw_evidence
+product_observations
+catalog_runs
+catalog_run_chunks
+product_history (stable source + identity_key; product_id omitted)
+        ↓ restore exact provenance ids
+empty migrated database/schema
+        ↓ M11 extraction verification
+        ↓ M12 ledger rebuild
+products
+        ↓ M10 replay verification
+recovered trusted state
+```
+
+RawEvidence is exported globally, not only through downstream references, so evidence that survived acquisition but failed before parsing is not silently discarded by backup selection. The bundle has a canonical SHA-256 hash; tampering fails before restore. A restore target must be empty, which prevents accidental merge semantics from being mistaken for disaster recovery.
+
+Durable rows with integer primary keys are restored with their original ids because history/provenance references depend on them. PostgreSQL sequences are then synchronized to the restored maxima; otherwise the first post-recovery write could collide with an explicitly restored id even though the recovery itself succeeded. `products` is rebuilt with fresh materialization ids and history is relinked by stable `(source, identity_key)`.
+
+`verify-disaster-recovery` creates a fresh PostgreSQL schema inside one rollback-only transaction, restores only the bundle, rebuilds all source projections, compares the recovered semantic projection with the source projection, and rolls the temporary schema back. This is a clean-schema proof, not a substitute for externally retaining the bundle itself.
+
+New invariant:
+
+```text
+INV-26 clean migrated DB + intact durable recovery bundle
+       → equivalent trusted semantic projection
+```
+
+
+## 21. Acceptance criteria
 
 ```text
 AC-16 product price change → one UPDATE with correct previous/new snapshots
@@ -690,9 +728,13 @@ AC-52 an already-empty products projection can be rebuilt to the same semantic s
 AC-53 projection rebuild relinks every original history row to the newly materialized product identity without rewriting history ids
 AC-54 invalid RawEvidence/extraction provenance fails closed before projection deletion
 AC-55 PostgreSQL delete/recreate/relink verification succeeds inside a transaction and rollback restores the committed projection/history links
+AC-56 recovery bundle excludes `products` while retaining all durable evidence/ledger rows and detects bundle tampering
+AC-57 restoring the durable bundle into an empty database rebuilds an equivalent semantic projection and relinks history
+AC-58 restore into a non-empty target fails closed rather than merging state
+AC-59 PostgreSQL clean-schema disaster-recovery verification rebuilds and compares the projection, then rolls the temporary schema back
 ```
 
-## 21. Freeze rule
+## 22. Freeze rule
 
 ```text
 new mechanism only if

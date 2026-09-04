@@ -20,7 +20,44 @@ Current milestones:
 - **M10 — projection replay verification:** rebuild the trusted current projection from persisted semantic history/freshness evidence, verify provenance, and detect drift.
 - **M11 — version-addressable raw re-extraction:** retain historical extractor implementations by version and verify persisted observations by re-running the recorded runtime against RawEvidence.
 - **M12 — empty-projection recovery:** make semantic history independent from `products`, rebuild a source projection from the ledger, relink history, and verify the destructive cycle inside a rollback-only transaction.
+- **M13 — clean-database disaster recovery:** export durable evidence/ledger state without `products`, restore it into an empty schema/database, rebuild all projections, and compare the recovered semantic state with the source.
 
+
+
+## M13 finding
+
+M12 proved that `products` can be deleted and rebuilt, but that is not whole-database disaster recovery. If the database itself is lost, RawEvidence, observations, catalog coverage proof, and semantic history are lost with it unless they exist outside the failed database. M13 therefore introduces an application-level recovery bundle that deliberately excludes the rebuildable projection:
+
+```text
+Recovery bundle
+├── raw_evidence                 # includes orphan/parser-failure evidence
+├── product_observations         # persisted historical interpretation
+├── catalog_runs
+├── catalog_run_chunks           # persisted completeness proof
+└── product_history              # semantic ledger, product_id omitted
+
+products                         # NOT exported
+```
+
+A restore target must already be migrated and empty. Exact durable primary keys are restored so provenance references remain valid, PostgreSQL sequences are advanced after explicit-ID restore, then every source projection is rebuilt from the recovered ledger and re-verified with M10/M11 semantics. A non-empty target fails closed.
+
+Export/restore:
+
+```bash
+python -m src.main export-recovery recovery.json
+
+# On a fresh migrated database:
+python -m src.main --database-url "$RECOVERY_DATABASE_URL" \
+  restore-recovery recovery.json
+```
+
+Rollback-only disaster-recovery proof on PostgreSQL:
+
+```bash
+python -m src.main verify-disaster-recovery
+```
+
+The verifier creates a fresh temporary PostgreSQL schema, restores only the durable bundle, rebuilds `products`, compares the recovered semantic projection with the committed source projection, then rolls the entire schema back. No migration is added in M13.
 
 
 ## M12 finding
@@ -280,6 +317,10 @@ M12 adds:
 
 > The semantic ledger must survive removal of the mutable `products` projection and must be sufficient to materialize and relink an equivalent projection from empty state.
 
+M13 adds:
+
+> A clean migrated database must be recoverable from an independently exported durable evidence/ledger bundle without copying the `products` projection.
+
 ## Current sources
 
 ```text
@@ -344,7 +385,7 @@ product_history  ← stable semantic ledger (`source`, `identity_key`)
 products         ← rebuildable current projection
 ```
 
-M4 through M7 require **no schema migration**. M8 adds migration `0005_m8_catalog_completeness`. M9 adds `0006_m9_catalog_coverage_proof`, which persists catalog run keys/start refs and the 1:N `catalog_run_chunks` proof relation. M12 adds `0007_m12_rebuildable_projection`, which decouples semantic history identity from the mutable `products` surrogate row.
+M4 through M7 require **no schema migration**. M8 adds migration `0005_m8_catalog_completeness`. M9 adds `0006_m9_catalog_coverage_proof`, which persists catalog run keys/start refs and the 1:N `catalog_run_chunks` proof relation. M12 adds `0007_m12_rebuildable_projection`, which decouples semantic history identity from the mutable `products` surrogate row. M13 requires no schema migration.
 
 ## Local PostgreSQL
 
@@ -464,6 +505,15 @@ RUN_POSTGRES=1 \
 pytest -q tests/integration/test_m12_postgres_projection_rebuild.py
 ```
 
+M13 clean-database disaster-recovery tests:
+
+```bash
+pytest -q tests/acceptance/test_m13_disaster_recovery.py
+
+RUN_POSTGRES=1 \
+pytest -q tests/integration/test_m13_postgres_disaster_recovery.py
+```
+
 Full integration suite, including live sources:
 
 ```bash
@@ -520,6 +570,16 @@ python -m src.main verify-rebuild scrapify_js
 ```
 
 Exit code `0` means the independent ledger rebuilt an equivalent projection and the transaction was rolled back; exit code `1` means the pre-check, extraction chain, ledger, or rebuilt projection diverged.
+
+M13 can export durable recovery state, restore it into an empty migrated database, and prove a full clean-schema recovery:
+
+```bash
+python -m src.main export-recovery recovery.json
+python -m src.main --database-url "$RECOVERY_DATABASE_URL" restore-recovery recovery.json
+python -m src.main verify-disaster-recovery
+```
+
+`verify-disaster-recovery` never commits the temporary recovery schema.
 
 ## Architecture contract
 
