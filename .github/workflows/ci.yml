@@ -1,0 +1,55 @@
+name: Data Scraper CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Run scraper tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: data_scraper_test
+          POSTGRES_USER: data_scraper
+          POSTGRES_PASSWORD: data_scraper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U data_scraper -d data_scraper_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg://data_scraper:data_scraper@localhost:5432/data_scraper_test
+      RUN_POSTGRES: "1"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Apply migrations
+        run: |
+          alembic upgrade head
+
+      - name: Run tests
+        run: |
+          pytest -q
