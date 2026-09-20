@@ -1,153 +1,239 @@
 # Data Scraper
 
-A reliability-focused Python data-ingestion system for collecting external product data and maintaining a trustworthy current state and history.
+A Python data-ingestion project focused on reliable acquisition, parsing, normalization, validation, and trustworthy handling of external product data.
 
-This public repository is a portfolio-oriented showcase. Detailed design records, reusable internal mechanisms, and production-specific implementation details are intentionally omitted.
+This repository is a **portfolio-oriented public showcase**. It contains representative implementation and tests while intentionally omitting reusable production internals and detailed architecture mechanisms.
 
-## What this project demonstrates
+## Problem
 
-The project focuses on correctness under conditions that commonly make long-running data pipelines unreliable:
+External data pipelines become difficult when source data changes, observations arrive in unexpected forms, identities are inconsistent, or incomplete acquisition is mistaken for real business-state changes.
 
-- changing external source data
-- delayed or out-of-order observations
-- concurrent updates
-- incomplete catalog acquisition
-- retries and interrupted runs
-- parser evolution
-- stale or rebuildable derived state
-- recovery after data loss
-- browser-based acquisition when plain HTTP is insufficient
+The larger project was developed around a simple principle:
 
-The main design goal is simple:
+> Only validated and accepted observations should be allowed to affect trusted state.
 
-> Only validated and accepted observations may change trusted persisted state.
+## Public Code Sample
 
-## High-level architecture
+The public repository includes representative implementations for:
+
+- HTTP acquisition
+- HTML and JSON parsing
+- product normalization
+- source identity handling
+- validation
+- multiple external-source adapters
+- deterministic unit tests
+
+High-level flow:
 
 ```text
-External sources
+External source
       ↓
 Acquisition
       ↓
-Raw evidence
+Parsing
       ↓
-Extraction / normalization
+Normalization
       ↓
 Validation
       ↓
-Trusted state transition
-      ↓
-Current product state
-      ↓
-Semantic history
-      ↓
-Read-only delivery
+Structured observation
 ```
 
-Operational concerns such as run tracking, retry handling, logging, and recovery are kept separate from product truth.
+## Engineering Considerations
 
-## Key properties
+The complete project explored reliability concerns including:
 
-### Deterministic state handling
+- delayed and out-of-order observations
+- concurrent state changes
+- incomplete catalog acquisition
+- meaningful-change detection
+- rebuildable derived state
+- recovery verification
+- parser evolution
+- interrupted execution and retries
+- browser-based acquisition for JavaScript-rendered sources
 
-The system distinguishes between newly observed data, meaningful state changes, stale observations, and no-op observations. Historical source order or other presentation noise is not treated as a business-state change.
+These mechanisms are intentionally described only at a high level in this public showcase.
 
-### Temporal correctness
+## Representative Source Coverage
 
-An older observation may still be retained for traceability, but it cannot move trusted state backward in time.
+The sample code demonstrates different acquisition and parsing shapes:
 
-### Concurrency safety
+- static HTML products
+- WooCommerce-style HTML
+- JSON product catalogs
+- richer product representations with categories and variants
 
-Concurrent updates are handled so state decisions are based on the latest committed information rather than on stale worker-local assumptions.
+This keeps source-specific parsing separate from shared normalization and validation concepts.
 
-### Explicit acquisition completeness
+## Design Approach
 
-Missing data is not automatically interpreted as disappearance. Absence only affects trusted state when the acquisition scope is known to be complete.
+The project follows several recurring principles:
 
-### Rebuildable derived state
+- external data is treated as evidence, not automatically as trusted state
+- parsing, normalization, and validation are separate concerns
+- source-specific behavior stays behind explicit adapters
+- identity should remain stable even when source presentation changes
+- deterministic behavior should be testable independently of live sources
+- additional mechanisms should be introduced in response to real failure modes rather than added preemptively
 
-The current-state projection is treated as rebuildable rather than as the only source of truth. Verification paths check that trusted state can be reproduced from durable historical evidence.
+The public repository demonstrates these ideas through the acquisition and transformation layers without exposing the complete production architecture.
 
-### Recovery verification
+## Repository Structure
 
-The project includes recovery-oriented tests and tooling that exercise rebuild and restore paths instead of assuming backups are correct merely because they exist.
+```text
+src/
+├── acquisition/
+│   ├── fetch.py
+│   └── models.py
+│
+├── books/
+│   ├── models.py
+│   ├── normalization.py
+│   ├── parser.py
+│   └── validation.py
+│
+├── products/
+│   ├── models.py
+│   ├── normalization.py
+│   ├── source.py
+│   └── validation.py
+│
+├── scrapeme/
+│   └── parser.py
+│
+├── scrapify_js/
+│   └── parser.py
+│
+├── scraping_sandbox/
+│   └── parser.py
+│
+└── extractors/
+    ├── books_to_scrape_v1.py
+    ├── scrapeme_live_v2.py
+    ├── scrapify_js_json_v1.py
+    └── scraping_sandbox_json_v1.py
 
-### Version-aware extraction
+tests/
+├── fixtures/
+│   ├── book_product.html
+│   ├── scrapeme_product.html
+│   ├── scrapify_products.json
+│   └── scraping_sandbox_product.html
+│
+└── unit/
+    ├── test_book_parser.py
+    ├── test_fetch.py
+    ├── test_m3_richer_product_normalization.py
+    ├── test_m3_richer_product_validation.py
+    ├── test_product_normalization.py
+    ├── test_product_source.py
+    ├── test_scrapeme_parser.py
+    ├── test_scrapify_js_parser.py
+    ├── test_scraping_sandbox_parser.py
+    └── test_validation.py
+```
 
-Historical observations retain enough provenance to detect when current extraction behavior no longer reproduces previously accepted interpretations.
+The public tree intentionally contains only a representative slice of the full system.
 
-### Failure-aware operations
+## Tests
 
-Runs have explicit lifecycle state, interrupted work can be identified, and retries are designed around existing idempotence and temporal-correctness guarantees.
+The public repository includes a compact deterministic test suite covering representative behavior such as:
 
-### Browser acquisition boundary
+- HTML parsing
+- JSON parsing
+- product normalization
+- validation
+- product identity and source handling
+- richer product semantics
+- HTTP acquisition behavior
 
-Playwright is used only where JavaScript-rendered content requires it. Browser acquisition feeds the same downstream evidence and state pipeline rather than becoming a separate source of truth.
-
-## Verification
-
-The repository contains deterministic, integration, PostgreSQL, recovery, and opt-in live tests covering areas such as:
-
-- state-transition semantics
-- temporal ordering
-- concurrent updates
-- acquisition completeness
-- semantic history
-- projection replay and rebuild
-- historical extraction verification
-- clean-database recovery
-- operational run lifecycle
-- browser-based acquisition
-
-Typical local test run:
+Run the tests with:
 
 ```bash
 pytest -q
 ```
 
-PostgreSQL-backed integration tests are opt-in:
+At the time this showcase was prepared, the public test suite contained:
 
-```bash
-RUN_POSTGRES=1 pytest -q tests/integration
+```text
+16 passed
 ```
-
-Browser and live-source checks are also opt-in so the deterministic suite remains reproducible.
 
 ## Technology
 
+The public showcase uses:
+
 - Python
-- PostgreSQL
-- SQLAlchemy
-- Alembic
+- HTTPX
+- Beautiful Soup
+- lxml
 - Pytest
-- FastAPI / Uvicorn for read-only delivery
-- Playwright for browser acquisition
-- Docker Compose
 - GitHub Actions
 
-## Local development
+The complete private implementation also contains persistence, operational reliability, recovery, and browser-acquisition components that are intentionally not published here.
 
-Start PostgreSQL:
+## Local Development
 
-```bash
-docker compose up -d postgres
-```
-
-Configure the database and apply migrations:
+Create a virtual environment:
 
 ```bash
-export DATABASE_URL='postgresql+psycopg://data_scraper:data_scraper@localhost:5433/data_scraper'
-alembic upgrade head
+python -m venv .venv
 ```
 
-Run the deterministic test suite:
+Activate it on Linux or WSL:
+
+```bash
+source .venv/bin/activate
+```
+
+Install the project:
+
+```bash
+python -m pip install --upgrade pip
+pip install -e .
+```
+
+Run tests:
 
 ```bash
 pytest -q
 ```
 
-## Scope
+## What Is Intentionally Omitted
 
-This repository is intended to demonstrate systems thinking around reliable external-data ingestion: evidence preservation, trustworthy state transitions, concurrency, recovery, verification, and operational failure handling.
+The complete implementation contains additional work around areas such as:
 
-It is not intended to publish a complete reusable production blueprint. Detailed architecture decisions, internal recovery algorithms, exact locking strategies, and other reusable implementation details are kept outside the public showcase.
+- persistence architecture
+- concurrent state transitions
+- catalog completeness
+- semantic history
+- projection replay and rebuild
+- recovery verification
+- historical extraction behavior
+- operational run lifecycle
+- retry and interruption handling
+- browser-based acquisition
+- read-only delivery interfaces
+- observability
+
+These components are intentionally excluded from the public repository.
+
+The public version is designed to show implementation quality and engineering approach without publishing the complete reusable production architecture.
+
+## Portfolio Scope
+
+The purpose of this repository is to demonstrate:
+
+- decomposition of an external-data problem
+- clean acquisition and parsing boundaries
+- explicit normalization and validation
+- deterministic testing
+- source-specific adapters behind shared domain concepts
+- reliability-oriented systems thinking
+- separation between raw external data and trusted internal representations
+
+It is **not** intended to publish a complete reusable production blueprint.
+
+Detailed persistence design, concurrency mechanisms, recovery algorithms, completeness mechanisms, versioned extraction infrastructure, and other reusable production internals are intentionally kept outside the public repository.
