@@ -6,21 +6,8 @@ dependencies = [
     "httpx>=0.27,<1",
     "beautifulsoup4>=4.12,<5",
     "lxml>=5,<7",
-    "SQLAlchemy>=2.0,<3",
-    "alembic>=1.13,<2",
-    "psycopg[binary]>=3.2,<4",
-    "fastapi>=0.115",
-    "uvicorn>=0.30",
-    "playwright>=1.52",
 ]
-
-[project.scripts]
-data-scraper = "src.main:entrypoint"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/unit"]
 pythonpath = ["."]
-markers = [
-    "live: tests that call the real external source",
-    "postgres: tests that require a PostgreSQL database",
-]
