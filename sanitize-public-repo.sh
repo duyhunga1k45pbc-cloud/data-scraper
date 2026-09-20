@@ -1,3 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ ! -d .git ]; then
+  echo "ERROR: run this from the public data-scraper repository root."
+  exit 1
+fi
+
+cat > README.md <<'EOF_README'
 # Data Scraper
 
 A reliability-focused Python data-ingestion system for collecting external product data and maintaining a trustworthy current state and history.
@@ -151,3 +160,29 @@ pytest -q
 This repository is intended to demonstrate systems thinking around reliable external-data ingestion: evidence preservation, trustworthy state transitions, concurrency, recovery, verification, and operational failure handling.
 
 It is not intended to publish a complete reusable production blueprint. Detailed architecture decisions, internal recovery algorithms, exact locking strategies, and other reusable implementation details are kept outside the public showcase.
+EOF_README
+
+if [ -d docs ]; then
+  git rm -r docs
+fi
+
+# Remove common local-only artifacts if they somehow became tracked/untracked here.
+rm -rf .pytest_cache
+find . -type d -name __pycache__ -prune -exec rm -rf {} +
+
+echo
+echo "Sanitization staged locally. Nothing has been pushed yet."
+echo
+echo "Review:"
+git status --short
+echo
+git diff --stat
+
+echo
+echo "If the diff looks right, run:"
+echo '  git add -A'
+echo '  git commit -m "docs: convert repository into public showcase"'
+echo '  git push origin main'
+
+echo
+echo "Reminder: old detailed content remains in existing public Git history."
