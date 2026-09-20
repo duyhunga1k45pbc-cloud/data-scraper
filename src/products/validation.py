@@ -13,12 +13,7 @@ from .models import (
 )
 
 
-SOURCE_HOSTS = {
-    "books_to_scrape": "books.toscrape.com",
-    "scrapeme_live": "scrapeme.live",
-    "scrapify_js": "scrapifydatalabs.com",
-    "scraping_sandbox": "scrapingsandbox.com",
-}
+SOURCE_HOSTS = {'books_to_scrape': 'books.toscrape.com', 'scrapeme_live': 'scrapeme.live', 'scrapify_js': 'scrapifydatalabs.com', 'scraping_sandbox': 'scrapingsandbox.com', 'web_scraping_dev': 'web-scraping.dev'}
 
 
 def _canonical_url_is_valid(source: str, url: str | None) -> bool:

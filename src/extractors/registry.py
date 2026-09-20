@@ -10,6 +10,7 @@ from . import books_to_scrape_v1
 from . import scrapeme_live_v2
 from . import scrapify_js_json_v1
 from . import scraping_sandbox_json_v1
+from . import web_scraping_dev_html_v1
 
 
 ExtractorCallable = Callable[[RawEvidence], tuple[ProductObservation, ...]]
@@ -58,6 +59,12 @@ _RUNTIMES = (
         version=scraping_sandbox_json_v1.EXTRACTOR_VERSION,
         implementation="src.extractors.scraping_sandbox_json_v1:parse_product",
         extract=_single(scraping_sandbox_json_v1.parse_product),
+    ),
+    ExtractorRuntime(
+        source=web_scraping_dev_html_v1.SOURCE,
+        version=web_scraping_dev_html_v1.EXTRACTOR_VERSION,
+        implementation="src.extractors.web_scraping_dev_html_v1:extract_observations",
+        extract=web_scraping_dev_html_v1.extract_observations,
     ),
 )
 

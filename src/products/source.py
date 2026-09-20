@@ -3,11 +3,7 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 
-SOURCE_BY_HOST = {
-    "books.toscrape.com": "books_to_scrape",
-    "scrapeme.live": "scrapeme_live",
-    "scrapingsandbox.com": "scraping_sandbox",
-}
+SOURCE_BY_HOST = {'books.toscrape.com': 'books_to_scrape', 'scrapeme.live': 'scrapeme_live', 'scrapingsandbox.com': 'scraping_sandbox', 'web-scraping.dev': 'web_scraping_dev'}
 
 
 class UnsupportedSourceError(ValueError):

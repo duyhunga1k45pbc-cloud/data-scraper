@@ -747,3 +747,57 @@ M18 does not add proxy rotation, CAPTCHA bypass, anti-bot evasion, Redis, Celery
 or chunk-level resume. Browser automation must respect site terms, robots rules,
 and access restrictions.
 
+## M19 — real multi-source expansion proof
+
+M19 adds `web-scraping.dev` as a fifth real product source and deliberately uses
+plain HTTP/HTML because this source does not require a browser for its static
+catalog/product path. M18 already proved Playwright where JavaScript execution is
+actually required.
+
+The source-specific code stops at existing boundaries:
+
+```text
+web-scraping.dev /products?page=N
+        ↓ httpx + HTML discovery
+catalog RawEvidence / CatalogChunkResult
+        ↓
+web-scraping.dev /product/<id>
+        ↓ exact RawEvidence
+source parser
+        ↓
+ProductObservation
+        ↓
+existing normalization → validation → state → history → replay/rebuild/delivery
+```
+
+Run deterministic proof:
+
+```bash
+pytest -q
+```
+
+Run the opt-in live source proof:
+
+```bash
+RUN_LIVE=1 pytest -q tests/integration/test_m19_live_web_scraping_dev.py
+```
+
+Run the PostgreSQL persistence proof:
+
+```bash
+export DATABASE_URL='postgresql+psycopg://data_scraper:data_scraper@localhost:5433/data_scraper'
+RUN_POSTGRES=1 pytest -q tests/integration/test_m19_postgres_web_scraping_dev.py
+```
+
+Inspect acquisition without mutating trusted state:
+
+```bash
+python -m src.web_scraping_dev.cli --max-products 5
+```
+
+A configured catalog/product limit is an explicit `LIMIT_REACHED` chunk and
+therefore `INCOMPLETE`; it is never treated as a smaller complete catalog. The
+adapter also deduplicates overlapping product links between pages before detail
+fetches. M19 adds no migration, scheduler, queue, Redis, Celery, or new trusted
+state model.
+

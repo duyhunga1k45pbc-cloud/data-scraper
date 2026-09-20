@@ -1026,3 +1026,84 @@ AC-99 local Playwright fixture proves post-JavaScript DOM can contain links abse
 AC-100 opt-in live web-scraping.dev JS-only fixture proves the mechanism against a safe external source
 ```
 
+## M19 — real multi-source expansion without rebuilding the core
+
+M19 adds a new real source to test the architecture's extensibility rather than
+adding another internal mechanism. The requirement is:
+
+> A new source with its own acquisition and parser shape must enter the existing
+> evidence/observation contracts without modifying trusted-state, replay,
+> projection-rebuild, or run-lifecycle semantics.
+
+The new source is `web_scraping_dev` (`https://web-scraping.dev`). Its static
+catalog path uses the least-complex correct mechanism, plain HTTP plus HTML
+parsing. Playwright remains available from M18 for browser-only sources, but is
+not forced into sources that do not require it.
+
+```text
+web-scraping.dev
+   ↓ source-specific HTTP/pagination/detail traversal
+RawEvidence + CatalogChunkResult[]
+   ↓ source-specific HTML extractor v1
+ProductObservation
+   ↓
+existing ProductNormalizedData
+   ↓
+existing validation/state/history/replay/rebuild/delivery
+```
+
+Catalog pages and detail pages are represented as one linear M9 proof chain.
+Overlapping product links across pages are deduplicated before detail fetches.
+Transport/HTTP/parse failures, catalog-page limits, and product limits terminate
+with explicit non-success chunks, so coverage is `INCOMPLETE` and unseen
+identities cannot be marked `DISAPPEARED`.
+
+M19 persists source identity truthfully as `web_scraping_dev`. Product ID comes
+from `/product/<id>`. Product title, price, compare-at price, and availability
+come only from explicit page markup. The purchase-quantity selector is not
+interpreted as stock quantity. Incomplete variant information is not promoted to
+trusted variant state. Missing required source fields fail closed through the
+existing validation/parser boundary instead of being guessed.
+
+The M11 runtime registry is extended explicitly for:
+
+```text
+(web_scraping_dev, web-scraping-dev-html-v1)
+→ src.extractors.web_scraping_dev_html_v1
+```
+
+No latest-version fallback is introduced.
+
+### M19 invariants
+
+**INV-52** Source-specific M19 code ends at existing `RawEvidence`,
+`CatalogChunkResult`/`CatalogAcquisition`, and `ProductObservation` boundaries;
+it does not create a second trusted-state path.
+
+**INV-53** New observations preserve truthful source identity and canonical
+`web-scraping.dev/product/<id>` locators.
+
+**INV-54** Adding the source does not introduce source-specific logic into
+`src/products/state.py`, `src/storage/replay.py`, `src/storage/rebuild.py`, or
+`src/runs/service.py`.
+
+**INV-55** A traversal limit or any page/detail failure is `INCOMPLETE`; only the
+existing M9 terminal proof can authorize absence reconciliation.
+
+**INV-56** Every persisted M19 observation resolves to the explicit retained M11
+extractor runtime `web-scraping-dev-html-v1`.
+
+### M19 acceptance criteria
+
+```text
+AC-101 fixture product parses into ProductObservation and reaches existing CREATE logic
+AC-102 two catalog pages with an overlapping product link deduplicate and prove COMPLETE only after all details succeed
+AC-103 detail fetch failure preserves earlier direct observations but leaves coverage INCOMPLETE
+AC-104 configured product limit emits LIMIT_REACHED rather than truncated COMPLETE
+AC-105 normal product validation accepts truthful web_scraping_dev identity without changes to state.py
+AC-106 M11 runtime resolver explicitly resolves web-scraping-dev-html-v1
+AC-107 state/replay/rebuild/run core files remain source-agnostic
+AC-108 opt-in live web-scraping.dev catalog + detail proof uses current external markup
+AC-109 PostgreSQL persists a directly observed M19 product through the existing service path while an INCOMPLETE run performs no absence reconciliation
+```
+
